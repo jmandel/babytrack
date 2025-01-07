@@ -1,0 +1,1104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Logger React Demo</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom": "https://esm.sh/react-dom@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.263.1",
+            "openai": "https://esm.sh/openai@4.20.1",
+            "date-fns-tz": "https://esm.sh/date-fns-tz@2.0.0",
+            "json5": "https://esm.sh/json5@2.2.3"
+        }
+    }
+    </script>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useRef, useEffect } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Mic, MicOff, Volume2 } from 'lucide-react';
+        import OpenAI from 'openai';
+        import { format, zonedTimeToUtc } from 'date-fns-tz';
+        import JSON5 from 'json5';
+
+        // TypeScript interface definitions
+        const types = `
+        enum EventType {
+            Feeding = "FEEDING",
+            Diaper = "DIAPER",
+            Sleep = "SLEEP",
+            Awake = "AWAKE",
+            Medical = "MEDICAL",
+            Growth = "GROWTH",
+            Milestone = "MILESTONE"
+        }
+
+        enum FeedingType {
+            Bottle = "BOTTLE",
+            Breastfeeding = "BREASTFEEDING",
+            Purees = "PUREES",
+            Solids = "SOLIDS"
+        }
+
+        enum BottleComponentType {
+            Formula = "FORMULA",
+            BreastMilk = "BREAST_MILK",
+            Water = "WATER",
+            Fortifier = "FORTIFIER"
+        }
+
+        enum DiaperType {
+            Wet = "WET",
+            Soiled = "SOILED",
+            Mixed = "MIXED"
+        }
+
+        enum SleepEventType {
+            Start = "START",
+            End = "END"
+        }
+
+        enum MedicalEventType {
+            Medication = "MEDICATION",
+            DoctorAppointment = "DOCTOR_APPOINTMENT",
+            Vaccination = "VACCINATION",
+            Symptom = "SYMPTOM",
+            Treatment = "TREATMENT",
+            Other = "OTHER"
+        }
+
+        enum MeasurementType {
+            Weight = "WEIGHT",
+            Height = "HEIGHT",
+            HeadCircumference = "HEAD_CIRCUMFERENCE"
+        }
+
+        enum DiaperComponentType {
+            Urine = "URINE",
+            Stool = "STOOL"
+        }
+
+        enum UrineDescriptor {
+            Clear = "CLEAR",
+            Cloudy = "CLOUDY",
+            Dark = "DARK",
+            Concentrated = "CONCENTRATED",
+            Pale = "PALE"
+        }
+
+        enum StoolDescriptor {
+            Seedy = "SEEDY",
+            Watery = "WATERY",
+            Mucousy = "MUCOUSY",
+            Formed = "FORMED",
+            Loose = "LOOSE",
+            Hard = "HARD",
+            Soft = "SOFT"
+        }
+
+        enum StoolColor {
+            Yellow = "YELLOW",
+            Green = "GREEN",
+            Brown = "BROWN",
+            Black = "BLACK",
+            Bloody = "BLOODY"
+        }
+
+        interface BaseEvent {
+            type: EventType;
+            id?: string;
+            occurredAt: string;     // When the event actually happened
+            endedAt?: string;       // When the event ended (for duration events)
+            notes?: string;
+        }
+
+        interface BottleComponent {
+            type: BottleComponentType;
+            amountMl: number;
+        }
+
+        interface FeedingEvent extends BaseEvent {
+            type: EventType.Feeding;
+            feedingType: FeedingType;
+            durationMinutes?: number;
+            bottleComponents?: BottleComponent[];
+            side?: "left" | "right";
+        }
+
+        interface DiaperComponent {
+            type: DiaperComponentType;
+            amount: "small" | "medium" | "large";
+            descriptors: UrineDescriptor[] | StoolDescriptor[];
+            color?: StoolColor;  // Only for stool components
+        }
+
+        interface DiaperEvent extends BaseEvent {
+            type: EventType.Diaper;
+            components: DiaperComponent[];
+            leakage?: boolean;
+            rash?: boolean;
+        }
+
+        interface SleepEvent extends BaseEvent {
+            type: EventType.Sleep;
+            sleepEventType: SleepEventType;
+            sleepLocation?: string;
+        }
+
+        interface AwakeEvent extends BaseEvent {
+            type: EventType.Awake;
+        }
+
+        interface MedicalEvent extends BaseEvent {
+            type: EventType.Medical;
+            medicalEventType: MedicalEventType;
+            details?: any;
+        }
+
+        interface GrowthEvent extends BaseEvent {
+            type: EventType.Growth;
+            measurements: {
+                type: MeasurementType;
+                value: number;
+                unit: string;
+            }[];
+        }
+
+        interface MilestoneEvent extends BaseEvent {
+            type: EventType.Milestone;
+            milestone: string;
+        }
+
+        type NewbornEvent =
+            | FeedingEvent
+            | DiaperEvent
+            | SleepEvent
+            | AwakeEvent
+            | MedicalEvent
+            | GrowthEvent
+            | MilestoneEvent;
+        `;
+
+        // WakeWordListener class implementation
+        class WakeWordListener {
+            constructor(options) {
+                this.wakeWord = options.wakeWord.toLowerCase();
+                this.sleepWord = options.sleepWord.toLowerCase();
+                this.isListening = false;
+                this.isAwake = false;
+                this.awakeningId = 0;
+                
+                this.onStateChange = options.onStateChange;
+                this.onError = options.onError;
+                this.onUtterance = options.onUtterance;
+                this.onDebug = options.onDebug;
+
+                this.recognition = null;
+                this.initRecognition();
+            }
+
+            initRecognition() {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SpeechRecognition) {
+                    throw new Error('Speech recognition not supported');
+                }
+
+                this.recognition = new SpeechRecognition();
+                this.recognition.continuous = true;
+                this.recognition.interimResults = true;
+                this.recognition.lang = 'en-US';
+
+                this.recognition.onresult = this.handleResult.bind(this);
+                this.recognition.onerror = this.handleError.bind(this);
+                this.recognition.onend = this.handleEnd.bind(this);
+                this.recognition.onaudiostart = () => this.onDebug?.({ event: 'audiostart' });
+                this.recognition.onaudioend = () => this.onDebug?.({ event: 'audioend' });
+                this.recognition.onsoundstart = () => this.onDebug?.({ event: 'soundstart' });
+                this.recognition.onsoundend = () => this.onDebug?.({ event: 'soundend' });
+                this.recognition.onspeechstart = () => this.onDebug?.({ event: 'speechstart' });
+                this.recognition.onspeechend = () => this.onDebug?.({ event: 'speechend' });
+            }
+
+            handleResult(event) {
+                const current = event.resultIndex;
+                const transcript = event.results[current][0].transcript.toLowerCase();
+                const confidence = event.results[current][0].confidence;
+                const isFinal = event.results[current].isFinal;
+
+                this.onDebug?.({
+                    event: 'result',
+                    transcript,
+                    confidence,
+                    isFinal,
+                    isAwake: this.isAwake
+                });
+
+                if (!isFinal) return;
+
+                // Wake word detection
+                if (!this.isAwake && transcript.includes(this.wakeWord)) {
+                    this.isAwake = true;
+                    this.awakeningId++;
+                    this.onStateChange?.({ isAwake: true, awakeningId: this.awakeningId });
+                    
+                    // Emit content after wake word if any
+                    const afterWake = transcript.split(this.wakeWord)[1]?.trim();
+                    if (afterWake && !afterWake.includes(this.sleepWord)) {
+                        this.onUtterance?.({ text: afterWake });
+                    }
+                    return;
+                }
+
+                // Sleep word detection
+                if (this.isAwake && transcript.includes(this.sleepWord)) {
+                    const beforeSleep = transcript.split(this.sleepWord)[0]?.trim();
+                    if (beforeSleep && !beforeSleep.includes(this.wakeWord)) {
+                        this.onUtterance?.({ text: beforeSleep });
+                    }
+                    
+                    this.isAwake = false;
+                    this.onStateChange?.({ isAwake: false, awakeningId: this.awakeningId });
+                    return;
+                }
+
+                // Normal utterance when awake
+                if (this.isAwake) {
+                    this.onUtterance?.({ text: transcript });
+                }
+            }
+
+            handleError(event) {
+                this.onError?.(new Error(`Speech recognition error: ${event.error}`));
+            }
+
+            handleEnd() {
+                if (this.isListening && !this.isPaused) {
+                    this.recognition.start();
+                }
+            }
+
+            start() {
+                if (!this.isListening) {
+                    this.recognition.start();
+                    this.isListening = true;
+                }
+            }
+
+            stop() {
+                if (this.isListening) {
+                    this.recognition.stop();
+                    this.isListening = false;
+                    this.isAwake = false;
+                }
+            }
+
+            updateWakeWord(word) {
+                this.wakeWord = word.toLowerCase();
+            }
+
+            updateSleepWord(word) {
+                this.sleepWord = word.toLowerCase();
+            }
+        }
+
+        // StructuredVoiceLogger class implementation
+        class StructuredVoiceLogger {
+            constructor(options) {
+                const configuration = {
+                    apiKey: options.apiKey,
+                    dangerouslyAllowBrowser: true
+                };
+
+                this.openai = new OpenAI(configuration);
+                this.schema = options.schema;
+                this.listener = options.listener;
+                this.textBuffer = [];
+                this.maxContextEvents = options.maxContextEvents || 10;
+                
+                this.onStructuredData = options.onStructuredData;
+                this.onError = options.onError;
+                this.onDebug = options.onDebug;
+                this.getRecentEvents = options.getRecentEvents;  // Function to get recent events
+
+                this.activeRequest = null;
+                this.processTimeout = null;
+
+                this.systemPrompt = this.generateSystemPrompt();
+
+                this.listener.onUtterance = async (utterance) => {
+                    this.textBuffer.push(utterance.text);
+                    this.debouncedProcess();
+                };
+
+                // Add helper for ISO8601 with timezone
+                this.formatDate = (date) => {
+                    return format(date, "yyyy-MM-dd'T'HH:mm:ss.SSSxxx", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+                };
+            }
+
+            debouncedProcess() {
+                if (this.processTimeout) {
+                    clearTimeout(this.processTimeout);
+                }
+
+                this.processTimeout = setTimeout(() => {
+                    this.tryProcessBuffer();
+                }, 150);
+            }
+
+            async tryProcessBuffer() {
+                if (this.textBuffer.length === 0) return;
+
+                try {
+                    // Cancel previous request if it exists
+                    if (this.activeRequest) {
+                        this.activeRequest.cancelled = true;
+                    }
+
+                    const text = this.textBuffer.join(' ');
+                    const result = await this.processUtterance(text, new Date());
+                    
+                    if (result) {
+                        this.textBuffer = [];
+                    }
+                } catch (error) {
+                    if (!error.cancelled) {  // Only report non-cancellation errors
+                        this.onError(error);
+                    }
+                }
+            }
+
+            async processUtterance(text, timestamp) {
+                const request = { cancelled: false };
+                this.activeRequest = request;
+
+                try {
+                    const messages = [
+                        { role: "system", content: this.systemPrompt }
+                    ];
+
+                    // Get recent events from the datastore
+                    const recentEvents = this.getRecentEvents?.(this.maxContextEvents) || [];
+                    if (recentEvents.length > 0) {
+                        messages.push({
+                            role: "user",
+                            content: `Recent events (most recent first):\n${JSON.stringify(recentEvents, null, 2)}`
+                        });
+                    }
+
+                    messages.push({ 
+                        role: "user", 
+                        content: `Current time: ${this.formatDate(timestamp)}\nUtterance: ${text}`
+                    });
+
+                    const completion = await this.openai.chat.completions.create({
+                        model: "gpt-4o-mini",
+                        messages,
+                        temperature: 0.1,
+                        max_tokens: 1000
+                    });
+
+                    if (request.cancelled) {
+                        const error = new Error('Request cancelled');
+                        error.cancelled = true;
+                        throw error;
+                    }
+
+                    this.onDebug?.({
+                        type: 'completion',
+                        timestamp: new Date(),
+                        request: {
+                            messages,
+                            model: "gpt-4o-mini",
+                            temperature: 0.1,
+                            max_tokens: 1000
+                        },
+                        response: completion
+                    });
+
+                    const result = this.parseResponse(completion.choices[0].message.content);
+                    this.onStructuredData(result);
+                    return result;
+
+                } catch (error) {
+                    throw error;
+                } finally {
+                    if (this.activeRequest === request) {
+                        this.activeRequest = null;
+                    }
+                }
+            }
+
+            parseResponse(response) {
+                try {
+                    const jsonMatch = response.match(/```json\n([\s\S]*?)\n```/) || 
+                                    response.match(/```([\s\S]*?)```/);
+                    
+                    const jsonStr = jsonMatch ? jsonMatch[1] : response;
+                    return JSON5.parse(jsonStr);
+
+                } catch (error) {
+                    throw new Error(`Failed to parse LLM response: ${error.message}\nResponse was: ${response}`);
+                }
+            }
+
+            start() {
+                this.listener.start();
+            }
+
+            stop() {
+                this.listener.stop();
+            }
+
+            get isListening() {
+                return this.listener.isListening;
+            }
+
+            generateSystemPrompt() {
+                return `You are a structured data parser that converts natural language into JSON objects.
+                
+                The data should conform to this TypeScript interface:
+                ${this.schema}
+
+                Instructions:
+                1. Listen to the utterance and determine if it's:
+                   a) Creating a new event (NEVER include an 'id' field)
+                   b) Modifying a specific existing event (MUST include the existing event's 'id')
+                   c) Adjusting event timing
+
+                2. Timestamp handling:
+                   - 'occurredAt': When the event actually happened (required)
+                   - 'endedAt': When the event ended (optional, for duration-based events)
+                   - Use relative time expressions ("2 hours ago", "yesterday at 3pm")
+                   - Default to current timestamp if no time is specified
+
+                3. Notes field handling:
+                   - Only include notes when the user explicitly provides additional information
+                   - Notes should contain user observations, not system actions
+                   - Don't repeat information that's already captured in other fields
+
+                4. For new events (NEVER include an 'id' field):
+                   - Create a complete object with all required fields
+                   - Set 'occurredAt' based on context or current time
+                   - Example:
+                   \`\`\`json
+                   {
+                     "type": "FEEDING",
+                     "occurredAt": "2024-01-05T15:30:00-05:00",
+                     "endedAt": "2024-01-05T15:45:00-05:00",
+                     "feedingType": "BOTTLE",
+                     "bottleComponents": [
+                       {
+                         "type": "FORMULA",
+                         "amountMl": 60
+                       }
+                     ],
+                     "notes": "Very eager to eat, finished bottle quickly"
+                   }
+                   \`\`\`
+
+                5. For modifications (MUST include the existing event's 'id'):
+                   - Only include an 'id' when explicitly modifying an existing event
+                   - Reference events by their temporal position ("the last feeding", "previous diaper change")
+                   - ALWAYS emit complete snapshots with ALL fields, even when only changing one field
+                   - Example of modifying just the amount:
+                   \`\`\`json
+                   {
+                     "id": "feeding-123",
+                     "type": "FEEDING",
+                     "occurredAt": "2024-01-05T15:00:00-05:00",
+                     "endedAt": "2024-01-05T15:15:00-05:00",
+                     "feedingType": "BOTTLE",
+                     "bottleComponents": [
+                       {
+                         "type": "FORMULA",
+                         "amountMl": 90  // Changed just this value
+                       }
+                     ],
+                     "notes": "Baby was distracted by older sibling"
+                   }
+                   \`\`\`
+
+                6. Important rules:
+                   - NEVER include an 'id' field for new events
+                   - ALWAYS include an 'id' field when modifying existing events
+                   - ALWAYS emit complete objects with ALL fields
+                   - NEVER emit partial updates or diffs
+                   - Only generate data that is explicitly mentioned or can be confidently inferred
+                   - Don't reuse IDs from recent events unless explicitly modifying them`;
+            }
+        }
+
+        // Add this helper function at the top level
+        const copyToClipboard = (text) => {
+            navigator.clipboard.writeText(text).catch(err => console.error('Failed to copy:', err));
+        };
+
+        // React component implementation
+        const VoiceLoggerApp = () => {
+            const [isListening, setIsListening] = useState(false);
+            const [status, setStatus] = useState({ isAwake: false, awakeningId: 0 });
+            const [error, setError] = useState('');
+            const [wakeWord, setWakeWord] = useState(() => 
+                localStorage.getItem('wakeWord') || 'antelope'
+            );
+            const [sleepWord, setSleepWord] = useState(() => 
+                localStorage.getItem('sleepWord') || 'zebra'
+            );
+            const [apiKey, setApiKey] = useState(() => 
+                localStorage.getItem('openaiApiKey') || ''
+            );
+            const [dataStore, setDataStore] = useState(() => {
+                const stored = localStorage.getItem('eventStore');
+                return new Map(stored ? JSON.parse(stored) : []);
+            });
+            const [debugEvents, setDebugEvents] = useState([]);
+            const [micRequested, setMicRequested] = useState(false);
+
+            const listenerRef = useRef(null);
+            const loggerRef = useRef(null);
+            const storeRef = useRef(new Map());
+
+            const initializeLogger = () => {
+                if (!apiKey) {
+                    throw new Error('Gemini API key is required');
+                }
+
+                const handleUtterance = async (utterance) => {
+                    console.log('Utterance handler called:', utterance);  // Debug log
+                    if (utterance.isFinal) {
+                        await loggerRef.current?.processUtterance(utterance.text, utterance.timestamp);
+                    }
+                };
+
+                listenerRef.current = new WakeWordListener({
+                    wakeWord,
+                    sleepWord,
+                    onStateChange: (state) => {
+                        setStatus({ isAwake: state.isAwake, awakeningId: state.awakeningId });
+                        setIsListening(true);
+                        addDebugEvent('state', state);
+                    },
+                    onError: (error) => {
+                        setError(error.message);
+                        setIsListening(false);
+                        addDebugEvent('error', { message: error.message });
+                    },
+                    onDebug: (event) => {
+                        addDebugEvent('recognition', event);
+                    },
+                    onUtterance: handleUtterance
+                });
+
+                loggerRef.current = new StructuredVoiceLogger({
+                    apiKey,
+                    schema: types,
+                    listener: listenerRef.current,
+                    maxContextEvents: 10,
+                    getRecentEvents: (n) => {
+                        return Array.from(storeRef.current.values())
+                            .sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt))
+                            .slice(0, n)
+                            .map(({ meta, ...event }) => event);
+                    },
+                    onStructuredData: (data) => {
+                        const now = new Date();
+                        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                        const formatDate = (date) => {
+                            return format(date, "yyyy-MM-dd'T'HH:mm:ss.SSSxxx", { timeZone });
+                        };
+
+                        // Get existing store entries
+                        const currentEntries = Array.from(storeRef.current.entries());
+                        
+                        // Create new event
+                        const id = data.id || crypto.randomUUID();
+                        const { id: eventId, ...eventData } = data;
+                        const existingEvent = storeRef.current.get(id);
+                        
+                        const enrichedData = {
+                            ...eventData,
+                            id,
+                            meta: {
+                                createdAt: existingEvent?.meta?.createdAt || formatDate(now),
+                                updatedAt: formatDate(now),
+                                version: (existingEvent?.meta?.version || 0) + 1
+                            }
+                        };
+
+                        // Create new store with ALL existing entries plus the new/updated one
+                        const newStore = new Map([
+                            ...currentEntries,
+                            [id, enrichedData]
+                        ]);
+
+                        storeRef.current = newStore;
+                        setDataStore(newStore);
+                    },
+                    onError: (error) => {
+                        setError(error.message);
+                    },
+                    onDebug: (event) => {
+                        addDebugEvent('completion', event);
+                    }
+                });
+            };
+
+            const handleToggle = () => {
+                if (!loggerRef.current || !listenerRef.current) {
+                    try {
+                        initializeLogger();
+                    } catch (error) {
+                        setError(error.message);
+                        return;
+                    }
+                }
+
+                if (isListening) {
+                    loggerRef.current.stop();
+                    setIsListening(false);
+                } else {
+                    loggerRef.current.start();
+                    setIsListening(true);
+                }
+            };
+
+            const handleClearStore = () => {
+                storeRef.current.clear();
+                setDataStore(new Map());
+            };
+
+            const addDebugEvent = (type, data) => {
+                setDebugEvents(prev => [
+                    {
+                        type,
+                        data,
+                        timestamp: new Date()
+                    },
+                    ...prev
+                ].slice(0, 100)); // Keep last 100 events
+            };
+
+            const handleDeleteEvent = (id) => {
+                const newStore = new Map(storeRef.current);
+                newStore.delete(id);
+                storeRef.current = newStore;
+                setDataStore(new Map(newStore));
+            };
+
+            useEffect(() => {
+                return () => {
+                    loggerRef.current?.stop();
+                };
+            }, []);
+
+            useEffect(() => {
+                localStorage.setItem('wakeWord', wakeWord);
+            }, [wakeWord]);
+
+            useEffect(() => {
+                localStorage.setItem('sleepWord', sleepWord);
+            }, [sleepWord]);
+
+            useEffect(() => {
+                localStorage.setItem('openaiApiKey', apiKey);
+            }, [apiKey]);
+
+            useEffect(() => {
+                if (apiKey) {
+                    try {
+                        setMicRequested(true);
+                        initializeLogger();
+                        loggerRef.current?.start();
+                        setIsListening(true);
+                    } catch (error) {
+                        setError(error.message);
+                    }
+                }
+            }, []); // Run once on mount
+
+            useEffect(() => {
+                localStorage.setItem('eventStore', 
+                    JSON.stringify(Array.from(dataStore.entries()))
+                );
+            }, [dataStore]);
+
+            const EventIcon = ({ type }) => {
+                const iconClass = "w-4 h-4";
+                switch (type) {
+                    case 'FEEDING':
+                        return <svg className={iconClass} viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M11 19h2v2h-2zm0-3h2v2h-2zm0-3h2v2h-2zm0-3h2v2h-2z"/>
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
+                        </svg>;
+                    case 'DIAPER':
+                        return <svg className={iconClass} viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
+                        </svg>;
+                    // Add other icons...
+                    default:
+                        return null;
+                }
+            };
+
+            const EventCard = ({ event, onDelete }) => {
+                const { id, type, occurredAt, endedAt, meta } = event;
+
+                const formatTime = (isoString) => {
+                    return new Date(isoString).toLocaleTimeString([], { 
+                        hour: 'numeric', 
+                        minute: '2-digit',
+                        hour12: true 
+                    });
+                };
+
+                const handleCopyJson = (e) => {
+                    e.stopPropagation();
+                    const { meta, ...eventWithoutMeta } = event;
+                    const jsonStr = JSON.stringify(eventWithoutMeta, null, 2);
+                    copyToClipboard(jsonStr);
+                };
+
+                const renderEventContent = () => {
+                    if (!type) return <div className="mt-1 text-xs text-gray-500">Unknown event type</div>;
+                    
+                    switch (type) {
+                        case 'FEEDING':
+                            return <FeedingEventContent event={event} />;
+                        case 'DIAPER':
+                            return <DiaperEventContent event={event} />;
+                        case 'SLEEP':
+                            return <SleepEventContent event={event} />;
+                        default:
+                            return <div className="mt-1 text-xs text-gray-500">{type.toLowerCase()}</div>;
+                    }
+                };
+
+                return (
+                    <div className="bg-white rounded-lg shadow-sm p-2 text-sm">
+                        <div className="flex items-center gap-2 text-gray-600">
+                            <EventIcon type={type} />
+                            <span className="font-mono text-xs">
+                                {formatTime(occurredAt)}
+                                {endedAt && ` - ${formatTime(endedAt)}`}
+                            </span>
+                            <span className="text-xs text-gray-400 ml-auto">
+                                v{meta.version}
+                            </span>
+                            <button
+                                onClick={handleCopyJson}
+                                className="p-1 text-gray-400 hover:text-blue-500 rounded-full hover:bg-blue-50"
+                                title="Copy JSON"
+                            >
+                                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M8 4v12a2 2 0 002 2h8a2 2 0 002-2V7.242a2 2 0 00-.602-1.43L16.083 2.57A2 2 0 0014.685 2H10a2 2 0 00-2 2z" />
+                                    <path d="M16 2v3.5a2 2 0 002 2H21.5" />
+                                    <path d="M16 18v2a2 2 0 01-2 2H6a2 2 0 01-2-2V9a2 2 0 012-2h2" />
+                                </svg>
+                            </button>
+                            <button
+                                onClick={() => onDelete(id)}
+                                className="p-1 text-gray-400 hover:text-red-500 rounded-full hover:bg-red-50"
+                                title="Delete event"
+                            >
+                                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        {renderEventContent()}
+                    </div>
+                );
+            };
+
+            const FeedingEventContent = ({ event }) => {
+                const { feedingType, bottleComponents, durationMinutes, side } = event;
+                return (
+                    <div className="mt-1">
+                        <div className="flex items-center gap-2">
+                            <span className="font-medium">{feedingType}</span>
+                            {durationMinutes && 
+                                <span className="text-gray-500 text-xs">{durationMinutes}min</span>
+                            }
+                            {side && 
+                                <span className="text-gray-500 text-xs">{side} side</span>
+                            }
+                        </div>
+                        {bottleComponents && (
+                            <div className="flex gap-2 text-xs mt-1">
+                                {bottleComponents.map((comp, i) => (
+                                    <span key={i} className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded">
+                                        {comp.amountMl}ml {comp.type.toLowerCase()}
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            const DiaperEventContent = ({ event }) => {
+                // Destructure with default empty array for components
+                const { components = [], leakage, rash } = event;
+
+                const getAmountColor = (amount) => {
+                    switch (amount) {
+                        case 'small': return 'bg-yellow-50 text-yellow-700';
+                        case 'medium': return 'bg-yellow-100 text-yellow-800';
+                        case 'large': return 'bg-yellow-200 text-yellow-900';
+                        default: return 'bg-gray-50 text-gray-700';
+                    }
+                };
+
+                // Add safety check
+                if (!Array.isArray(components) || components.length === 0) {
+                    return (
+                        <div className="mt-1">
+                            <span className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">
+                                No details
+                            </span>
+                        </div>
+                    );
+                }
+
+                return (
+                    <div className="mt-1 space-y-2">
+                        <div className="flex flex-wrap gap-2">
+                            {components.map((comp, i) => (
+                                <div key={i} className="flex flex-col">
+                                    <div className={`text-xs px-2 py-0.5 rounded-t ${
+                                        comp.type === 'URINE' ? 'bg-yellow-100' : 'bg-brown-100'
+                                    }`}>
+                                        {comp.type.toLowerCase()}
+                                    </div>
+                                    <div className={`text-xs px-2 py-0.5 ${getAmountColor(comp.amount)}`}>
+                                        {comp.amount}
+                                    </div>
+                                    {comp.descriptors?.length > 0 && (
+                                        <div className="flex flex-wrap gap-1 mt-1">
+                                            {comp.descriptors.map((desc, j) => (
+                                                <span key={j} className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                                                    {desc.toLowerCase()}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {comp.type === 'STOOL' && comp.color && (
+                                        <span className="text-xs px-2 py-0.5 mt-1 rounded-full bg-gray-100 text-gray-600">
+                                            {comp.color.toLowerCase()}
+                                        </span>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                        {(leakage || rash) && (
+                            <div className="flex gap-2">
+                                {leakage && (
+                                    <span className="text-xs px-2 py-0.5 rounded bg-red-50 text-red-600">
+                                        leakage
+                                    </span>
+                                )}
+                                {rash && (
+                                    <span className="text-xs px-2 py-0.5 rounded bg-red-50 text-red-600">
+                                        rash
+                                    </span>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            return (
+                <div className="bg-gray-100 min-h-screen p-8">
+                    <div className="max-w-7xl mx-auto space-y-6">
+                        {/* Control Panel */}
+                        <div className="bg-white rounded-xl shadow-md overflow-hidden p-6">
+                            <div className="space-y-4">
+                                {!apiKey && (
+                                    <div className="p-4 bg-yellow-50 text-yellow-700 rounded-lg">
+                                        Please enter your OpenAI API key to start voice logging
+                                    </div>
+                                )}
+                                {micRequested && !isListening && (
+                                    <div className="p-4 bg-blue-50 text-blue-700 rounded-lg">
+                                        Please allow microphone access to use voice logging
+                                    </div>
+                                )}
+                                <div className="flex items-center justify-between">
+                                    <h1 className="text-xl font-bold text-gray-900">Voice Logger Demo</h1>
+                                    <button
+                                        onClick={handleToggle}
+                                        className={`p-2 rounded-full ${
+                                            isListening ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
+                                        }`}
+                                    >
+                                        {isListening ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+                                    </button>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700">Wake Word:</label>
+                                        <input
+                                            type="text"
+                                            value={wakeWord}
+                                            onChange={(e) => setWakeWord(e.target.value)}
+                                            className="mt-1 w-full p-2 border rounded text-sm"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700">Sleep Word:</label>
+                                        <input
+                                            type="text"
+                                            value={sleepWord}
+                                            onChange={(e) => setSleepWord(e.target.value)}
+                                            className="mt-1 w-full p-2 border rounded text-sm"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700">OpenAI API Key:</label>
+                                        <input
+                                            type="password"
+                                            value={apiKey}
+                                            onChange={(e) => setApiKey(e.target.value)}
+                                            className="mt-1 w-full p-2 border rounded text-sm"
+                                            placeholder="Enter your OpenAI API key"
+                                        />
+                                    </div>
+                                </div>
+
+                                {status.isAwake && (
+                                    <div className="flex items-center space-x-2 p-2 rounded text-green-600 bg-green-100">
+                                        <Volume2 className="w-5 h-5" />
+                                        <span>Awake (Session {status.awakeningId})</span>
+                                    </div>
+                                )}
+
+                                {error && (
+                                    <div className="text-red-600 text-sm">{error}</div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Data Display */}
+                        <div className="grid grid-cols-12 gap-6">
+                            {/* Debug Events Card */}
+                            <div className="col-span-4">
+                                <div className="bg-white rounded-xl shadow-md overflow-hidden p-6">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h2 className="text-lg font-semibold">Speech Events Debug</h2>
+                                        <span className="text-xs text-gray-500">Recognition Events</span>
+                                    </div>
+                                    <div id="debugLog" className="h-[calc(100vh-400px)] overflow-y-auto space-y-2 font-mono text-xs">
+                                        {debugEvents.map((event, idx) => (
+                                            <div 
+                                                key={idx} 
+                                                className={`p-2 rounded ${
+                                                    event.type === 'result' ? 'bg-blue-50' :
+                                                    event.type === 'state' ? 'bg-green-50' :
+                                                    event.type === 'error' ? 'bg-red-50' :
+                                                    'bg-gray-50'
+                                                }`}
+                                            >
+                                                <div className="flex justify-between">
+                                                    <span className="text-gray-500">{event.type}</span>
+                                                    <span className="text-gray-400">{event.timestamp.toLocaleTimeString()}</span>
+                                                </div>
+                                                <pre className="mt-1 whitespace-pre-wrap break-all">
+                                                    {JSON.stringify(event.data, null, 2)}
+                                                </pre>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Completions Debug Card */}
+                            <div className="col-span-4">
+                                <div className="bg-white rounded-xl shadow-md overflow-hidden p-6">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h2 className="text-lg font-semibold">Completions Debug</h2>
+                                        <span className="text-xs text-gray-500">OpenAI API Events</span>
+                                    </div>
+                                    <div className="h-[calc(100vh-400px)] overflow-y-auto space-y-2 font-mono text-xs">
+                                        {debugEvents
+                                            .filter(event => event.type === 'completion')
+                                            .map((event, idx) => (
+                                                <div key={idx} className="p-2 rounded bg-purple-50">
+                                                    <div className="flex justify-between">
+                                                        <span className="text-gray-500">Completion</span>
+                                                        <span className="text-gray-400">{event.timestamp.toLocaleTimeString()}</span>
+                                                    </div>
+                                                    <div className="mt-2 space-y-2">
+                                                        <div>
+                                                            <div className="text-xs font-semibold text-gray-500">Request:</div>
+                                                            <pre className="mt-1 whitespace-pre-wrap break-all bg-white p-2 rounded border">
+                                                                {JSON.stringify(event.data.request, null, 2)}
+                                                            </pre>
+                                                        </div>
+                                                        <div>
+                                                            <div className="text-xs font-semibold text-gray-500">Response:</div>
+                                                            <pre className="mt-1 whitespace-pre-wrap break-all bg-white p-2 rounded border">
+                                                                {JSON.stringify(event.data.response, null, 2)}
+                                                            </pre>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Data Store Card */}
+                            <div className="col-span-4">
+                                <div className="bg-white rounded-xl shadow-md overflow-hidden p-6">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h2 className="text-lg font-semibold">Events</h2>
+                                        <button
+                                            onClick={handleClearStore}
+                                            className="px-3 py-1 text-sm bg-red-100 text-red-600 rounded hover:bg-red-200"
+                                        >
+                                            Clear
+                                        </button>
+                                    </div>
+                                    <div className="space-y-2 h-[calc(100vh-400px)] overflow-y-auto">
+                                        {Array.from(dataStore.values())
+                                            .sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt))
+                                            .map(event => (
+                                                <EventCard 
+                                                    key={event.id} 
+                                                    event={event} 
+                                                    onDelete={handleDeleteEvent} 
+                                                />
+                                            ))
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Render the app
+        createRoot(document.getElementById('root')).render(
+            <React.StrictMode>
+                <VoiceLoggerApp />
+            </React.StrictMode>
+        );
+    </script>
+</body>
+</html>
