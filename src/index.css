@@ -1,0 +1,19 @@
+/* stylelint-disable at-rule-no-unknown */
+/* Tailwind base styles */
+@tailwind base;
+/* Tailwind component styles */
+@tailwind components;
+/* Tailwind utility styles */
+@tailwind utilities;
+
+@layer base {
+    body {
+        @apply antialiased text-gray-900;
+    }
+}
+
+@layer components {
+    .container {
+        @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8;
+    }
+} 

@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CSV to NewbornEvent JSON</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 1rem;
+    }
+    textarea {
+      width: 100%;
+      height: 30rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>CSV to NewbornEvent JSON</h1>
+  <input type="file" id="csvFile" accept=".csv" />
+  <button id="convertButton">Convert CSV to JSON</button>
+
+  <h2>Output JSON</h2>
+  <textarea id="output" readonly></textarea>
+
+  <script>
+    /**********************************************************************
+     * ENUMS & INTERFACES (brief version)
+     **********************************************************************/
+    const EventType = {
+      Feeding: "FEEDING",
+      Pumping: "PUMPING",
+      Diaper: "DIAPER",
+      Sleep: "SLEEP",
+      Awake: "AWAKE",
+      Medical: "MEDICAL",
+      Growth: "GROWTH",
+      Milestone: "MILESTONE",
+    };
+
+    const FeedingType = {
+      Bottle: "BOTTLE",
+      Nursing: "NURSING",
+      Solids: "SOLIDS",
+    };
+
+    const BottleContentType = {
+      Formula: "FORMULA",
+      BreastMilk: "BREAST_MILK",
+      Water: "WATER",
+      Fortifier: "FORTIFIER",
+    };
+
+    const MedicalEventType = {
+      Medication: "MEDICATION",
+      Temperature: "TEMPERATURE",
+      Symptom: "SYMPTOM",
+      Treatment: "TREATMENT",
+      Vaccination: "VACCINATION",
+    };
+
+    /**********************************************************************
+     * CSV -> Object Mapping Helpers
+     **********************************************************************/
+
+    /**
+     * Helper: Convert "YYYY-MM-DD HH:mm" to "YYYY-MM-DDTHH:mm:ss-05:00"
+     * Hard-coded offset = -05:00 for demonstration.
+     */
+    function toLocalIso8601WithOffset(dateStr) {
+      if (!dateStr) return undefined;
+      const [ymd, hm] = dateStr.trim().split(" ");
+      if (!ymd || !hm) return undefined;
+      return `${ymd}T${hm}:00-05:00`;
+    }
+
+    /**
+     * Parse "hh:mm" => total minutes (integer).
+     */
+    function parseDurationToMinutes(durationStr) {
+      if (!durationStr) return undefined;
+      const [hh, mm] = durationStr.split(":").map((s) => parseInt(s, 10));
+      return hh * 60 + mm;
+    }
+
+    /**
+     * Parse a "Feed" row to either a BOTTLE or NURSING event.
+     */
+    function parseFeedingRow(row) {
+      const occurredAt = toLocalIso8601WithOffset(row[1]);
+      const endedAt = toLocalIso8601WithOffset(row[2]);
+      const notes = row[7]?.trim() || undefined;
+
+      if (row[5]?.toLowerCase() === "bottle") {
+        // Bottle feed
+        const contentType = parseBottleContentType(row[4]);
+        const volumeMl = parseVolumeMl(row[6]);
+        const details = {
+          contents: [
+            {
+              type: contentType,
+              amountMl: volumeMl || 0,
+            },
+          ],
+          amountMlOffered: volumeMl || 0,
+          amountMlConsumed: volumeMl || 0,
+        };
+        return {
+          eventType: EventType.Feeding,
+          subType: FeedingType.Bottle,
+          occurredAt,
+          endedAt,
+          notes,
+          details,
+        };
+      } 
+      else if (row[5]?.toLowerCase() === "breast") {
+        // Nursing feed
+        const attempts = [];
+        if (row[4]) {
+          const att = parseNursingAttempt(row[4]);
+          if (att) attempts.push(att);
+        }
+        if (row[6]) {
+          const att2 = parseNursingAttempt(row[6]);
+          if (att2) attempts.push(att2);
+        }
+        const details = { attempts };
+        return {
+          eventType: EventType.Feeding,
+          subType: FeedingType.Nursing,
+          occurredAt,
+          endedAt,
+          notes,
+          details,
+        };
+      }
+
+      // Fallback to bottle if we can’t detect breast vs. bottle
+      return {
+        eventType: EventType.Feeding,
+        subType: FeedingType.Bottle,
+        occurredAt,
+        endedAt,
+        notes,
+        details: {
+          contents: [],
+          amountMlOffered: 0,
+        },
+      };
+    }
+
+    function parseBottleContentType(str) {
+      if (!str) return BottleContentType.Formula;
+      const lower = str.trim().toLowerCase();
+      if (lower.includes("formula")) return BottleContentType.Formula;
+      if (lower.includes("breast")) return BottleContentType.BreastMilk;
+      if (lower.includes("water")) return BottleContentType.Water;
+      if (lower.includes("fortifier")) return BottleContentType.Fortifier;
+      return BottleContentType.Formula;
+    }
+
+    function parseVolumeMl(str) {
+      if (!str) return 0;
+      const match = str.trim().match(/(\d+)/);
+      if (match) {
+        return parseInt(match[1], 10);
+      }
+      return 0;
+    }
+
+    function parseNursingAttempt(condStr) {
+      const match = condStr.trim().match(/(\d+):(\d+)([RL])?/i);
+      if (!match) {
+        return undefined;
+      }
+      const hh = parseInt(match[1], 10);
+      const mm = parseInt(match[2], 10);
+      let sideChar = match[3] || "R";
+      sideChar = sideChar.toUpperCase();
+
+      let side;
+      if (sideChar === "R") side = "RIGHT";
+      else if (sideChar === "L") side = "LEFT";
+      else side = "RIGHT";
+
+      const durationMinutes = hh * 60 + mm;
+      return { side, durationMinutes };
+    }
+
+    /**
+     * Parse "Pump" row
+     */
+    function parsePumpRow(row) {
+      const occurredAt = toLocalIso8601WithOffset(row[1]);
+      const endedAt = toLocalIso8601WithOffset(row[2]);
+      const notes = row[7]?.trim() || undefined;
+      const duration = parseDurationToMinutes(row[3]);
+      const volume = parseVolumeMl(row[4]);
+
+      return {
+        eventType: EventType.Pumping,
+        occurredAt,
+        endedAt,
+        notes,
+        details: {
+          side: "BOTH",
+          durationMinutes: duration || 0,
+          amountMl: volume || 0,
+          letdown: false,
+          method: "ELECTRIC",
+        },
+      };
+    }
+
+    /**
+     * Parse "Diaper" row
+     */
+    function parseDiaperRow(row) {
+      const occurredAt = toLocalIso8601WithOffset(row[1]);
+      const notes = row[7]?.trim() || undefined;
+      // Combine columns 4..7
+      const allDiaperText = [row[4], row[5], row[6], row[7]]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      let urine;
+      let stool;
+
+      if (allDiaperText.includes("pee") || allDiaperText.includes("urine")) {
+        urine = { volume: "medium" };
+        if (allDiaperText.includes("large")) urine.volume = "large";
+        else if (allDiaperText.includes("small")) urine.volume = "small";
+      }
+      if (allDiaperText.includes("poo") || allDiaperText.includes("stool") || allDiaperText.includes("poop")) {
+        stool = { volume: "medium" };
+        if (allDiaperText.includes("large")) stool.volume = "large";
+        else if (allDiaperText.includes("small")) stool.volume = "small";
+
+        if (allDiaperText.includes("brown")) stool.color = "brown";
+        else if (allDiaperText.includes("black")) stool.color = "black";
+        else if (allDiaperText.includes("yellow")) stool.color = "yellow";
+        else if (allDiaperText.includes("green")) stool.color = "green";
+        else if (allDiaperText.includes("red")) stool.color = "red";
+      }
+
+      // If “both” is found but not assigned above
+      if (allDiaperText.includes("both")) {
+        if (!urine) urine = { volume: "medium" };
+        if (!stool) stool = { volume: "medium", color: "other" };
+      }
+
+      return {
+        eventType: EventType.Diaper,
+        occurredAt,
+        notes,
+        details: {
+          urine,
+          stool,
+        },
+      };
+    }
+
+    /**
+     * Parse "Meds" row => Medical event (subType=MEDICATION).
+     */
+    function parseMedicationRow(row) {
+      const occurredAt = toLocalIso8601WithOffset(row[1]);
+      const notes = row[7]?.trim() || undefined;
+      const medicationName = row[5]?.trim() || "Unspecified medication";
+
+      return {
+        eventType: EventType.Medical,
+        subType: MedicalEventType.Medication,
+        occurredAt,
+        notes,
+        details: {
+          medication: medicationName,
+          dosageAmount: 1,
+          dosageUnit: "units",
+          route: "oral",
+        },
+      };
+    }
+
+    /**
+     * Parse "Tummy time" => treat as AWAKE event
+     */
+    function parseTummyTimeRow(row) {
+      const occurredAt = toLocalIso8601WithOffset(row[1]);
+      const endedAt = toLocalIso8601WithOffset(row[2]);
+      const notes = row[7]?.trim() || undefined;
+
+      return {
+        eventType: EventType.Awake,
+        occurredAt,
+        endedAt,
+        notes,
+        details: {
+          activity: "Tummy time",
+        },
+      };
+    }
+
+    function parseUnknownRow(row) {
+      const occurredAt = toLocalIso8601WithOffset(row[1]);
+      const endedAt = toLocalIso8601WithOffset(row[2]);
+      const notes = row[7]?.trim() || undefined;
+      return {
+        eventType: "UNKNOWN",
+        occurredAt,
+        endedAt,
+        notes,
+        raw: row,
+      };
+    }
+
+    function parseCsvRowToEvent(row) {
+      const typeStr = row[0]?.trim().toLowerCase();
+      switch (typeStr) {
+        case "feed":
+          return parseFeedingRow(row);
+        case "diaper":
+          return parseDiaperRow(row);
+        case "pump":
+          return parsePumpRow(row);
+        case "meds":
+          return parseMedicationRow(row);
+        case "tummy time":
+          return parseTummyTimeRow(row);
+        default:
+          return parseUnknownRow(row);
+      }
+    }
+
+    /**
+     * Basic CSV parser that:
+     * 1. Splits lines
+     * 2. Splits each line on commas outside quotes
+     * 3. Skips a header row if it matches known column names
+     */
+    function parseCsv(text) {
+      const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+
+      // If the first line looks like a header, remove it:
+      const firstLineLower = lines[0]?.toLowerCase() || "";
+      if (
+        firstLineLower.includes("type") &&
+        firstLineLower.includes("start") &&
+        firstLineLower.includes("end") &&
+        firstLineLower.includes("duration")
+      ) {
+        // This is likely the header row => remove it
+        lines.shift();
+      }
+
+      return lines.map((line) => {
+        let current = "";
+        let inQuotes = false;
+        const fields = [];
+
+        for (let i = 0; i < line.length; i++) {
+          const c = line[i];
+          if (c === '"') {
+            inQuotes = !inQuotes;
+          } else if (c === "," && !inQuotes) {
+            fields.push(current);
+            current = "";
+          } else {
+            current += c;
+          }
+        }
+        fields.push(current);
+
+        // Remove leading/trailing quotes
+        return fields.map((f) => f.replace(/^"|"$/g, ""));
+      });
+    }
+
+    /**********************************************************************
+     * Main: handle file input & convert
+     **********************************************************************/
+    document.getElementById("convertButton").addEventListener("click", () => {
+      const fileInput = document.getElementById("csvFile");
+      if (!fileInput.files || fileInput.files.length === 0) {
+        alert("Please select a CSV file first!");
+        return;
+      }
+      const file = fileInput.files[0];
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const csvText = e.target.result;
+        const csvRows = parseCsv(csvText);
+
+        // Convert each row to an event
+        const events = csvRows.map(parseCsvRowToEvent);
+
+        // Display in textarea
+        const outputArea = document.getElementById("output");
+        outputArea.value = JSON.stringify(events, null, 2);
+      };
+      reader.readAsText(file);
+    });
+  </script>
+</body>
+</html>

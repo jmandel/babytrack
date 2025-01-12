@@ -1,0 +1,2889 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Logger React Demo</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom": "https://esm.sh/react-dom@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.263.1",
+            "openai": "https://esm.sh/openai@4.20.1",
+            "date-fns-tz": "https://esm.sh/date-fns-tz@2.0.0",
+            "json5": "https://esm.sh/json5@2.2.3",
+            "lodash-es": "https://esm.sh/lodash-es@4.17.21",
+            "chart.js": "https://esm.sh/chart.js@4.4.1",
+            "chart.js/auto": "https://esm.sh/chart.js@4.4.1/auto"
+        }
+    }
+    </script>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useRef, useEffect, useCallback } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Mic, MicOff, Volume2, Baby, Moon, Sun, Stethoscope, Ruler, Star, Droplet, Timer } from 'lucide-react';
+        import OpenAI from 'openai';
+        import { format, zonedTimeToUtc } from 'date-fns-tz';
+        import JSON5 from 'json5';
+        import * as _ from 'lodash-es';
+        import Chart from 'chart.js/auto';
+
+        // Make lodash and Chart.js available globally
+        window._ = _;
+        window.Chart = Chart;
+
+        // TypeScript interface definitions
+        const types = `
+# Newborn Tracker Data Model
+
+This documentation describes the data model used to track a variety of baby-care events in a newborn tracking application. Each event is captured as a single object with a defined \`eventType\`, optional \`subType\`, and a \`details\` field specific to the event. This model supports feeding, diaper changes, pumping, sleep and awake times, medical records, growth measurements, and baby milestones.
+
+---
+
+## 1. Overview
+
+1. **Event Types**  
+   Each baby-care event is categorized under one of the \`EventType\` enum values:
+   - \`FEEDING\`
+   - \`PUMPING\`
+   - \`DIAPER\`
+   - \`SLEEP\`
+   - \`AWAKE\`
+   - \`MEDICAL\`
+   - \`GROWTH\`
+   - \`MILESTONE\`
+
+2. **Sub-Types**  
+   Within certain event types, we use a second discriminator, \`subType\`, to further refine the category. For example:
+   - **Feeding** uses \`FeedingType\` (\`BOTTLE\`, \`NURSING\`, \`SOLIDS\`).
+   - **Medical** uses \`MedicalEventType\` (\`MEDICATION\`, \`TEMPERATURE\`, \`SYMPTOM\`, \`TREATMENT\`, \`VACCINATION\`).
+
+3. **Details Object**  
+   Each event type has its own shape of \`details\`. For example, a \`BOTTLE\` feeding event must use the \`BottleFeedingDetails\` interface, while a medical \`MEDICATION\` event must use \`MedicationEvent["details"]\`.
+
+4. **Timestamps & Time Zones**  
+   - **\`occurredAt\`** denotes when the event started.  
+   - **\`endedAt\`** (if applicable) denotes when the event finished.  
+   - **Time Zone Format**: **All timestamps must be stored in local time as ISO8601 strings with offset** (e.g., \`2025-01-08T10:15:00-05:00\`).  
+     - This ensures that the exact local time and offset are preserved for historical data.  
+     - When your app processes these timestamps, it should parse and render them according to the user's current time zone or the local time in which the event was logged.
+
+5. **Enums & Union Types**  
+   - **Enums**: \`EventType\`, \`FeedingType\`, \`MedicalEventType\`, etc. define valid string values.  
+   - **Union Types**: A \`NewbornEvent\` can be any one of the event-specific interfaces (\`FeedingEvent\`, \`PumpingEvent\`, etc.) that all extend \`BaseEvent\`.
+
+---
+
+## 2. Base Interfaces and Enums
+
+\`\`\`ts
+/**
+ * ENUMS
+ */
+export enum EventType {
+  Feeding = "FEEDING",
+  Pumping = "PUMPING",
+  Diaper = "DIAPER",
+  Sleep = "SLEEP",
+  Awake = "AWAKE",
+  Medical = "MEDICAL",
+  Growth = "GROWTH",
+  Milestone = "MILESTONE",
+}
+
+export enum FeedingType {
+  Bottle = "BOTTLE",
+  Nursing = "NURSING",
+  Solids = "SOLIDS",
+}
+
+export enum BottleContentType {
+  Formula = "FORMULA",
+  BreastMilk = "BREAST_MILK",
+  Water = "WATER",
+  Fortifier = "FORTIFIER",
+}
+
+export enum SolidFoodConsistency {
+  Puree = "PUREE",
+  Mashed = "MASHED",
+  Finger = "FINGER",
+  Table = "TABLE",
+}
+
+export enum MeasurementUnit {
+  KG = "kg",
+  G = "g",
+  CM = "cm",
+  IN = "in",
+  ML = "ml",
+}
+
+export enum DosageUnit {
+  MG = "mg",
+  ML = "ml",
+  UNITS = "units",
+}
+
+export enum MedicalEventType {
+  Medication = "MEDICATION",
+  Temperature = "TEMPERATURE",
+  Symptom = "SYMPTOM",
+  Treatment = "TREATMENT",
+  Vaccination = "VACCINATION",
+}
+
+export enum MeasurementType {
+  Weight = "WEIGHT",
+  Length = "LENGTH",
+  HeadCircumference = "HEAD_CIRCUMFERENCE",
+}
+
+export enum PumpingMethod {
+  Manual = "MANUAL",
+  Electric = "ELECTRIC",
+  Hakaa = "HAKAA",
+}
+
+export enum BreastSide {
+  Left = "LEFT",
+  Right = "RIGHT",
+  Both = "BOTH",
+}
+
+/**
+ * BASE EVENT
+ */
+export interface BaseEvent {
+  eventType: EventType;
+  id?: string;
+  /**
+   * Must be an ISO8601 timestamp string with local time offset, e.g. \`YYYY-MM-DDTHH:mm:ss±hh:mm\`
+   */
+  occurredAt: string;
+  /**
+   * Optional end time, also stored as an ISO8601 string with local offset.
+   */
+  endedAt?: string;
+  notes?: string;
+  createdBy?: string;
+  deviceId?: string;
+}
+\`\`\`
+
+**Important**:  
+- \`occurredAt\` is **always required**.  
+- \`endedAt\` is optional and used only if the event has a defined end time (e.g., \`SLEEP\` session).
+
+---
+
+## 3. Feeding-Related Interfaces
+
+### 3.1. Bottle Feeds
+
+\`\`\`ts
+export interface BottleContent {
+  type: BottleContentType;
+  amountMl: number;
+}
+
+export interface BottleFeedingDetails {
+  contents: BottleContent[];
+  amountMlOffered: number;
+  amountMlConsumed?: number;
+}
+\`\`\`
+
+- A baby might take multiple \`BottleContent\` types in one feed (e.g., formula plus water).  
+- \`amountMlOffered\` is how much milk/formula was offered in total. \`amountMlConsumed\` is optional if the exact consumed volume is unknown.
+
+### 3.2. Nursing Feeds
+
+\`\`\`ts
+export interface NursingAttempt {
+  side: BreastSide;
+  startedAt?: string;
+  endedAt?: string;
+  durationMinutes?: number;
+  letdown?: boolean;
+  goodLatch?: boolean;
+}
+
+export interface NursingDetails {
+  attempts: NursingAttempt[];
+}
+\`\`\`
+
+- Each \`NursingAttempt\` can track start/end times, side, latch, etc.  
+- \`durationMinutes\` can be derived if you store \`startedAt\` and \`endedAt\`. Alternatively, track it directly.
+
+### 3.3. Solids
+
+\`\`\`ts
+export interface SolidFoodDetails {
+  consistency: SolidFoodConsistency;
+  foods: string[];
+  acceptance: "none" | "some" | "most" | "all" | "refused";
+  amountOffered?: string;
+}
+\`\`\`
+
+- \`foods\` is a list of items offered (e.g., "mashed bananas").  
+- \`acceptance\` indicates how well the baby ate.
+
+### 3.4. FeedingEvent Union
+
+\`\`\`ts
+export interface BaseFeedingEvent extends BaseEvent {
+  eventType: EventType.Feeding;
+  subType: FeedingType;
+  details: BottleFeedingDetails | NursingDetails | SolidFoodDetails;
+}
+
+export interface BottleFeedingEvent extends BaseFeedingEvent {
+  subType: FeedingType.Bottle;
+  details: BottleFeedingDetails;
+}
+
+export interface NursingFeedingEvent extends BaseFeedingEvent {
+  subType: FeedingType.Nursing;
+  details: NursingDetails;
+}
+
+export interface SolidsFeedingEvent extends BaseFeedingEvent {
+  subType: FeedingType.Solids;
+  details: SolidFoodDetails;
+}
+
+export type FeedingEvent =
+  | BottleFeedingEvent
+  | NursingFeedingEvent
+  | SolidsFeedingEvent;
+\`\`\`
+
+---
+
+## 4. Pumping
+
+\`\`\`ts
+export interface PumpingDetails {
+  side: BreastSide;
+  durationMinutes: number;
+  amountMl: number;
+  letdown?: boolean;
+  method?: PumpingMethod;
+}
+
+export interface PumpingEvent extends BaseEvent {
+  eventType: EventType.Pumping;
+  details: PumpingDetails;
+}
+\`\`\`
+
+- Tracks a pumping session, including total output in ml, method, and breast side.
+
+---
+
+## 5. Diaper
+
+\`\`\`ts
+export interface UrineDetails {
+  volume: "small" | "medium" | "large";
+  color?: "clear" | "pale" | "dark" | "amber" | "other";
+  concentrated?: boolean;
+}
+
+export interface StoolDetails {
+  /** Approximate volume, optional. */
+  volume?: "small" | "medium" | "large";
+  
+  /** Color categories commonly seen in infants. */
+  color?: "yellow" | "brown" | "green" | "black" | "red";
+  
+  /**
+   * Consistency descriptors for infant stools.
+   */
+  consistency?: "watery" | "loose" | "soft" | "formed" | "hard" | "seedy" | "tarry";
+  
+  /** Optional flags. */
+  mucus?: boolean;
+  blood?: boolean;
+}
+
+export interface DiaperCondition {
+  rash?: {
+    severity: "mild" | "moderate" | "severe";
+    location: string[];
+  };
+  leakage?: boolean;
+}
+
+export interface DiaperEvent extends BaseEvent {
+  eventType: EventType.Diaper;
+  details: {
+    urine?: UrineDetails;
+    stool?: StoolDetails;
+    condition?: DiaperCondition;
+  };
+}
+\`\`\`
+
+- Allows logging wet-only, stool-only, or wet+stool diapers.
+
+---
+
+## 6. Sleep & Awake
+
+\`\`\`ts
+export interface SleepEvent extends BaseEvent {
+  eventType: EventType.Sleep;
+  details: {
+    sleepLocation?: string;
+  };
+}
+
+export interface AwakeEvent extends BaseEvent {
+  eventType: EventType.Awake;
+  details: {
+    activity?: string;
+    mood?: "happy" | "fussy" | "neutral";
+  };
+}
+\`\`\`
+
+- \`SleepEvent\` typically has an \`endedAt\` to represent wake-up time.  
+- \`AwakeEvent\` can include optional notes about activity and mood.
+
+---
+
+## 7. Medical Events
+
+### 7.1. BaseMedicalEvent
+
+\`\`\`ts
+export interface BaseMedicalEvent extends BaseEvent {
+  eventType: EventType.Medical;
+  subType: MedicalEventType;
+  details: any;
+}
+\`\`\`
+
+### 7.2. Medication
+
+\`\`\`ts
+export interface MedicationEvent extends BaseMedicalEvent {
+  subType: MedicalEventType.Medication;
+  details: {
+    medication: string;
+    dosageAmount: number;
+    dosageUnit: DosageUnit;
+    route: "oral" | "topical" | "injection" | "other";
+  };
+}
+\`\`\`
+
+### 7.3. Temperature
+
+\`\`\`ts
+export interface TemperatureEvent extends BaseMedicalEvent {
+  subType: MedicalEventType.Temperature;
+  details: {
+    temperature: number;
+    unit: "C" | "F";
+    method: "oral" | "rectal" | "axillary" | "temporal";
+  };
+}
+\`\`\`
+
+### 7.4. Symptom
+
+\`\`\`ts
+export interface SymptomEvent extends BaseMedicalEvent {
+  subType: MedicalEventType.Symptom;
+  details: {
+    symptom: string;
+    severity: "mild" | "moderate" | "severe";
+    duration?: {
+      value: number;
+      unit: "minutes" | "hours" | "days";
+    };
+  };
+}
+\`\`\`
+
+### 7.5. Treatment
+
+\`\`\`ts
+export interface TreatmentEvent extends BaseMedicalEvent {
+  subType: MedicalEventType.Treatment;
+  details: {
+    treatment: string;
+    provider?: string;
+    followUp?: string;
+  };
+}
+\`\`\`
+
+### 7.6. Vaccination
+
+\`\`\`ts
+export interface VaccinationEvent extends BaseMedicalEvent {
+  subType: MedicalEventType.Vaccination;
+  details: {
+    vaccine: string;
+    dose: number;
+    site?: string;
+    provider?: string;
+  };
+}
+\`\`\`
+
+### 7.7. MedicalEvent Union
+
+\`\`\`ts
+export type MedicalEvent =
+  | MedicationEvent
+  | TemperatureEvent
+  | SymptomEvent
+  | TreatmentEvent
+  | VaccinationEvent;
+\`\`\`
+
+---
+
+## 8. Growth
+
+\`\`\`ts
+export interface Measurement {
+  type: MeasurementType;
+  value: number;
+  unit: MeasurementUnit;
+}
+
+export interface GrowthEvent extends BaseEvent {
+  eventType: EventType.Growth;
+  details: {
+    measurements: Measurement[];
+  };
+}
+\`\`\`
+
+- Supports multiple measurements in one event (e.g., weight + length).
+
+---
+
+## 9. Milestone
+
+\`\`\`ts
+export interface MilestoneEvent extends BaseEvent {
+  eventType: EventType.Milestone;
+  details: {
+    milestone: string;
+    category?: "motor" | "cognitive" | "social" | "language";
+  };
+}
+\`\`\`
+
+- Logs a baby milestone, with an optional category.
+
+---
+
+## 10. Master Union
+
+\`\`\`ts
+export type NewbornEvent =
+  | FeedingEvent
+  | PumpingEvent
+  | DiaperEvent
+  | SleepEvent
+  | AwakeEvent
+  | MedicalEvent
+  | GrowthEvent
+  | MilestoneEvent;
+\`\`\`
+
+---
+
+## 11. Time Zone Guidance
+
+Since we store timestamps in **ISO8601 local time with offset**, please follow these guidelines:
+
+- **Always include the local time zone offset** in the timestamp, e.g. \`2025-01-08T10:15:00-05:00\`.  
+- When rendering data to the user, your application should:  
+  1. Parse the stored ISO8601 string.  
+  2. Convert or display it in the user's local time zone as appropriate.  
+- If your backend or database uses a different standard (e.g., UTC timestamps), make sure to transform them properly into this format before returning data to clients.
+
+---
+
+## 12. Additional Recommendations
+
+1. **Validation**:  
+   - Consider using a runtime validation library (e.g., \`zod\` or \`io-ts\`) to ensure incoming data matches the schema—especially if the app is receiving data from external or untrusted sources.
+
+2. **Optional vs. Required Fields**:  
+   - Check your design assumptions about which fields may remain unset. For example, some logs might be partial.
+
+3. **Data Aggregation**:  
+   - When generating daily summaries, you can aggregate data from multiple event types. For instance, summing up total feeding volume or total sleep duration.
+
+4. **Future Extensions**:  
+   - Additional detail fields (e.g., multiple medication doses per event) can be handled by extending the relevant interfaces.
+
+        `;
+
+        // WakeWordListener class implementation
+        class WakeWordListener {
+            constructor(options) {
+                this.wakeWord = options.wakeWord.toLowerCase();
+                this.sleepWord = options.sleepWord.toLowerCase();
+                this.isListening = false;
+                this.isAwake = false;
+                this.awakeningId = 0;
+                
+                this.onStateChange = options.onStateChange;
+                this.onError = options.onError;
+                this.onUtterance = options.onUtterance;
+                this.onDebug = options.onDebug;
+
+                this.recognition = null;
+                this.initRecognition();
+            }
+
+            initRecognition() {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SpeechRecognition) {
+                    throw new Error('Speech recognition not supported');
+                }
+
+                this.recognition = new SpeechRecognition();
+                this.recognition.continuous = true;
+                this.recognition.interimResults = true;
+                this.recognition.lang = 'en-US';
+
+                this.recognition.onresult = this.handleResult.bind(this);
+                this.recognition.onerror = this.handleError.bind(this);
+                this.recognition.onend = this.handleEnd.bind(this);
+                this.recognition.onaudiostart = () => this.onDebug?.({ event: 'audiostart' });
+                this.recognition.onaudioend = () => this.onDebug?.({ event: 'audioend' });
+                this.recognition.onsoundstart = () => this.onDebug?.({ event: 'soundstart' });
+                this.recognition.onsoundend = () => this.onDebug?.({ event: 'soundend' });
+                this.recognition.onspeechstart = () => this.onDebug?.({ event: 'speechstart' });
+                this.recognition.onspeechend = () => this.onDebug?.({ event: 'speechend' });
+            }
+
+            handleResult(event) {
+                const current = event.resultIndex;
+                const transcript = event.results[current][0].transcript.toLowerCase();
+                const confidence = event.results[current][0].confidence;
+                const isFinal = event.results[current].isFinal;
+
+                this.onDebug?.({
+                    event: 'result',
+                    transcript,
+                    confidence,
+                    isFinal,
+                    isAwake: this.isAwake
+                });
+
+                if (!isFinal) return;
+
+                // Wake word detection
+                if (!this.isAwake && transcript.includes(this.wakeWord)) {
+                    this.isAwake = true;
+                    this.awakeningId++;
+                    this.onStateChange?.({ isAwake: true, awakeningId: this.awakeningId });
+                    
+                    // Emit content after wake word if any
+                    const afterWake = transcript.split(this.wakeWord)[1]?.trim();
+                    if (afterWake && !afterWake.includes(this.sleepWord)) {
+                        this.onUtterance?.({ text: afterWake });
+                    }
+                    return;
+                }
+
+                // Sleep word detection
+                if (this.isAwake && transcript.includes(this.sleepWord)) {
+                    const beforeSleep = transcript.split(this.sleepWord)[0]?.trim();
+                    if (beforeSleep && !beforeSleep.includes(this.wakeWord)) {
+                        this.onUtterance?.({ text: beforeSleep });
+                    }
+                    
+                    this.isAwake = false;
+                    this.onStateChange?.({ isAwake: false, awakeningId: this.awakeningId });
+                    return;
+                }
+
+                // Normal utterance when awake
+                if (this.isAwake) {
+                    this.onUtterance?.({ text: transcript });
+                }
+            }
+
+            handleError(event) {
+                this.onError?.(new Error(`Speech recognition error: ${event.error}`));
+            }
+
+            handleEnd() {
+                if (this.isListening && !this.isPaused) {
+                    this.recognition.start();
+                }
+            }
+
+            start() {
+                if (!this.isListening) {
+                    this.recognition.start();
+                    this.isListening = true;
+                }
+            }
+
+            stop() {
+                if (this.isListening) {
+                    this.recognition.stop();
+                    this.isListening = false;
+                    this.isAwake = false;
+                }
+            }
+
+            updateWakeWord(word) {
+                this.wakeWord = word.toLowerCase();
+            }
+
+            updateSleepWord(word) {
+                this.sleepWord = word.toLowerCase();
+            }
+        }
+
+        // StructuredVoiceLogger class implementation
+        class StructuredVoiceLogger {
+            constructor(options) {
+                const configuration = {
+                    apiKey: options.apiKey,
+                    dangerouslyAllowBrowser: true
+                };
+
+                this.openai = new OpenAI(configuration);
+                this.schema = options.schema;
+                this.listener = options.listener;
+                this.textBuffer = [];
+                this.maxContextEvents = options.maxContextEvents || 10;
+                this.maxRecentRequests = 5;
+                
+                this.onStructuredData = options.onStructuredData;
+                this.onError = options.onError;
+                this.onDebug = options.onDebug;
+                this.getRecentEvents = options.getRecentEvents;
+                this.getRecentUtterances = options.getRecentUtterances;
+                this.addUtterance = options.addUtterance;
+
+                this.activeRequest = null;
+                this.processTimeout = null;
+
+                // Add helper for ISO8601 with timezone
+                this.formatDate = (date) => {
+                    return format(date, "yyyy-MM-dd'T'HH:mm:ss.SSSxxx", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+                };
+
+                // Set up the utterance handler
+                this.listener.onUtterance = (utterance) => {
+                    this.textBuffer.push(utterance.text);
+                    this.debouncedProcess();
+                };
+            }
+
+            debouncedProcess() {
+                if (this.processTimeout) {
+                    clearTimeout(this.processTimeout);
+                }
+
+                this.processTimeout = setTimeout(() => {
+                    this.tryProcessBuffer();
+                }, 150);
+            }
+
+            async tryProcessBuffer() {
+                if (this.textBuffer.length === 0) return;
+
+                try {
+                    // Cancel previous request if it exists
+                    if (this.activeRequest) {
+                        this.activeRequest.cancelled = true;
+                    }
+
+                    const text = this.textBuffer.join(' ');
+                    const result = await this.processUtterance(text, new Date());
+                    
+                    if (result) {
+                        this.textBuffer = [];
+                    }
+                } catch (error) {
+                    if (!error.cancelled) {  // Only report non-cancellation errors
+                        this.onError(error);
+                    }
+                }
+            }
+
+            async processUtterance(text, timestamp) {
+                const request = { cancelled: false };
+                this.activeRequest = request;
+
+                try {
+                    // Get fresh recent events right before generating the prompt
+                    const messages = [
+                        { role: "system", content: this.generateSystemPrompt() }
+                    ];
+
+                    // Get fresh events again for the context
+                    const recentEvents = this.getRecentEvents?.(this.maxContextEvents) || [];
+                    if (recentEvents.length > 0) {
+                        messages.push({
+                            role: "user",
+                            content: `Recent events (most recent first):\n${JSON.stringify(recentEvents, null, 2)}`
+                        });
+                    }
+
+                    // Get recent utterances
+                    const recentUtterances = this.getRecentUtterances?.() || [];
+                    
+                    // Format the final user message with both history and current utterance
+                    const userMessage = [
+                        recentUtterances.length > 0 ? '## Recent Messages\n' + 
+                            recentUtterances.map(u => 
+                                `[${new Date(u.timestamp).toLocaleTimeString()}] ${u.text}`
+                            ).join('\n') : '',
+                        '\n## Current Message\n' +
+                        `Time: ${this.formatDate(timestamp)}\n` +
+                        `Utterance: ${text}`
+                    ].filter(Boolean).join('\n');
+
+                    messages.push({ 
+                        role: "user", 
+                        content: userMessage
+                    });
+
+                    const completion = await this.openai.chat.completions.create({
+                        model: "",
+                        messages,
+                        temperature: 0.1,
+                        max_tokens: 1000
+                    });
+
+                    if (request.cancelled) {
+                        const error = new Error('Request cancelled');
+                        error.cancelled = true;
+                        throw error;
+                    }
+
+                    this.onDebug?.({
+                        type: 'completion',
+                        timestamp: new Date(),
+                        request: {
+                            messages,
+                            model: "gpt-4o-mini",
+                            temperature: 0.1,
+                            max_tokens: 1000
+                        },
+                        response: completion
+                    });
+
+                    const result = this.parseResponse(completion.choices[0].message.content);
+                    
+                    // If we got a valid JSON response, add this to utterance history
+                    if (result && this.addUtterance) {
+                        this.addUtterance(text, timestamp);
+                    }
+                    
+                    this.onStructuredData(result);
+                    return result;
+
+                } catch (error) {
+                    throw error;
+                } finally {
+                    if (this.activeRequest === request) {
+                        this.activeRequest = null;
+                    }
+                }
+            }
+
+            generateSystemPrompt() {
+                return `You are a structured data parser that converts transcribed speech into JSON objects.
+                
+                The data should conform to this TypeScript interface:
+                ${this.schema}
+
+                Important Context:
+                - You are receiving transcribed speech, not direct text input
+                - Speech recognition may introduce transcription errors
+                - Interpret utterances flexibly, accounting for common speech-to-text mistakes
+                - Look for key information even if the exact wording is imperfect
+                - Numbers and proper nouns are especially prone to transcription errors
+
+                Instructions:
+                1. Listen to the utterance and determine if it's:
+                   a) Creating a new event (NEVER include an 'id' field)
+                   b) Modifying a specific existing event (MUST include the existing event's 'id')
+                   c) Adjusting event timing
+
+                2. Timestamp handling:
+                   - 'occurredAt': When the event actually happened (required)
+                   - 'endedAt': When the event ended (optional, for duration-based events)
+                   - Default to current timestamp if no time is specified
+                   - **You can update 'occurredAt' and 'endedAt' if the user specifies a change**
+                   - When modifying times, you can reference recent events for context
+
+                3. Notes field handling:
+                   - Only include notes when the user explicitly provides additional information
+                   - Notes should contain user observations, not system actions
+                   - Don't repeat information that's already captured in other fields
+
+                4. For new events (NEVER include an 'id' field):
+                   - Create a complete object with all required fields
+                   - Set 'occurredAt' based on context or current time
+                   - Example:
+                   \`\`\`json
+                   {
+                     "type": "FEEDING",
+                     "occurredAt": "2024-01-05T15:30:00-05:00",
+                     "endedAt": "2024-01-05T15:45:00-05:00",
+                     "feedingType": "BOTTLE",
+                     "feeding": {
+                       "contents": [
+                         {
+                           "type": "FORMULA",
+                           "amountMl": 60
+                         }
+                       ],
+                       "amountMlConsumed": 55
+                     },
+                     "notes": "Very eager to eat, finished bottle quickly"
+                   }
+                   \`\`\`
+
+                5. For modifications (MUST include the existing event's 'id'):
+                   - Only include an 'id' when explicitly modifying an existing event
+                   - Reference events by their temporal position ("the last feeding", "previous diaper change")
+                   - ALWAYS emit complete snapshots with ALL fields, even when only changing one field
+                   - Example of modifying just the amount:
+                   \`\`\`json
+                   {
+                     "id": "feeding-123",
+                     "type": "FEEDING",
+                     "occurredAt": "2024-01-05T15:00:00-05:00",
+                     "endedAt": "2024-01-05T15:15:00-05:00",
+                     "feedingType": "BOTTLE",
+                     "feeding": {
+                       "contents": [
+                         {
+                           "type": "FORMULA",
+                           "amountMl": 90
+                         }
+                       ],
+                       "amountMlConsumed": 85
+                     },
+                     "notes": "Baby was distracted by older sibling"
+                   }
+                   \`\`\`
+
+                6. Important rules:
+                   - NEVER include an 'id' field for new events
+                   - ALWAYS include an 'id' field when modifying existing events
+                   - ALWAYS emit complete objects with ALL fields
+                   - NEVER emit partial updates or diffs
+                   - Only generate data that is explicitly mentioned or can be confidently inferred
+                   - Don't reuse IDs from recent events unless explicitly modifying them
+                   - Consider the context from recent requests when interpreting the current request
+                   - Be flexible with transcription errors, focus on intent over exact wording
+                   - If the user's request appear to be truncated, respond with a plain text message stating "truncated"`;
+            }
+
+            parseResponse(response) {
+                try {
+                    const jsonMatch = response.match(/```json\n([\s\S]*?)\n```/) || 
+                                    response.match(/```([\s\S]*?)```/);
+                    
+                    const jsonStr = jsonMatch ? jsonMatch[1] : response;
+                    return JSON5.parse(jsonStr);
+
+                } catch (error) {
+                    throw new Error(`Failed to parse LLM response: ${error.message}\nResponse was: ${response}`);
+                }
+            }
+
+            start() {
+                this.listener.start();
+            }
+
+            stop() {
+                this.listener.stop();
+            }
+
+            get isListening() {
+                return this.listener.isListening;
+            }
+        }
+
+        // Add this helper function at the top level
+        const copyToClipboard = (text) => {
+            navigator.clipboard.writeText(text).catch(err => console.error('Failed to copy:', err));
+        };
+
+        // React component implementation
+        const VoiceLoggerApp = () => {
+            const [isListening, setIsListening] = useState(false);
+            const [status, setStatus] = useState({ isAwake: false, awakeningId: 0 });
+            const [error, setError] = useState('');
+            const [wakeWord, setWakeWord] = useState(() => 
+                localStorage.getItem('wakeWord') || 'start listening'
+            );
+            const [sleepWord, setSleepWord] = useState(() => 
+                localStorage.getItem('sleepWord') || 'stop listening'
+            );
+            const [apiKey, setApiKey] = useState(() => 
+                localStorage.getItem('openaiApiKey') || ''
+            );
+            const [dataStore, setDataStore] = useState(() => {
+                const stored = localStorage.getItem('eventStore');
+                return new Map(stored ? JSON.parse(stored) : []);
+            });
+            const [debugEvents, setDebugEvents] = useState([]);
+            const [micRequested, setMicRequested] = useState(false);
+            const [micPermissionDenied, setMicPermissionDenied] = useState(false);
+            const [requestId, setRequestId] = useState(0);
+            const [utteranceHistory, setUtteranceHistory] = useState(() => {
+                const stored = localStorage.getItem('utteranceHistory');
+                return stored ? JSON.parse(stored) : [];
+            });
+            const maxUtteranceHistory = 10;  // Keep last 10 utterances
+
+            const listenerRef = useRef(null);
+            const loggerRef = useRef(null);
+
+            // Add dataStore ref
+            const dataStoreRef = useRef(null);
+
+            // Update dataStoreRef whenever dataStore changes
+            useEffect(() => {
+                dataStoreRef.current = dataStore;
+            }, [dataStore]);
+
+            const addUtterance = (text, timestamp = new Date()) => {
+                setUtteranceHistory(prev => {
+                    const newHistory = [
+                        {
+                            text,
+                            timestamp: timestamp.toISOString(),
+                            id: crypto.randomUUID()
+                        },
+                        ...prev
+                    ].slice(0, maxUtteranceHistory);
+                    return newHistory;
+                });
+            };
+
+            // Add file input ref and handler
+            const fileInputRef = useRef(null);
+
+            const handleImportEvents = (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const events = JSON.parse(e.target?.result || '');
+                        if (!Array.isArray(events)) {
+                            setError('Imported data must be an array of events');
+                            return;
+                        }
+
+                        // Process each event
+                        const now = new Date();
+                        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                        const formatDate = (date) => {
+                            return format(date, "yyyy-MM-dd'T'HH:mm:ss.SSSxxx", { timeZone });
+                        };
+
+                        // Update dataStore using functional form
+                        setDataStore((prevStore) => {
+                            const newStore = new Map(prevStore);
+                            events.forEach(eventData => {
+                                const id = eventData.id || crypto.randomUUID();
+                                const { id: eventId, meta: oldMeta, ...eventDataWithoutMeta } = eventData;
+                                
+                                const enrichedData = {
+                                    ...eventDataWithoutMeta,
+                                    id,
+                                    meta: {
+                                        createdAt: oldMeta?.createdAt || formatDate(now),
+                                        updatedAt: formatDate(now),
+                                        version: 1
+                                    }
+                                };
+
+                                newStore.set(id, enrichedData);
+                            });
+                            return newStore;
+                        });
+                        
+                        // Clear the input
+                        if (fileInputRef.current) {
+                            fileInputRef.current.value = '';
+                        }
+                    } catch (error) {
+                        setError('Failed to parse imported events: ' + error.message);
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            const initializeLogger = () => {
+                if (!apiKey) {
+                    throw new Error('OpenAI API key is required');
+                }
+
+                const handleUtterance = async (utterance) => {
+                    console.log('Utterance handler called:', utterance);  // Debug log
+                    if (utterance.isFinal) {
+                        addUtterance(utterance.text, utterance.timestamp || new Date());
+                        await loggerRef.current?.processUtterance(utterance.text, utterance.timestamp);
+                    }
+                };
+
+                listenerRef.current = new WakeWordListener({
+                    wakeWord,
+                    sleepWord,
+                    onStateChange: (state) => {
+                        setStatus({ isAwake: state.isAwake, awakeningId: state.awakeningId });
+                        setIsListening(true);
+                        setMicPermissionDenied(false);
+                        addDebugEvent('state', state);
+                    },
+                    onError: (error) => {
+                        setError(error.message);
+                        if (error.message.includes('Permission denied') || error.message.includes('not allowed')) {
+                            setMicPermissionDenied(true);
+                        }
+                        setIsListening(false);
+                        addDebugEvent('error', { message: error.message });
+                    },
+                    onDebug: (event) => {
+                        addDebugEvent('recognition', event);
+                    },
+                    onUtterance: handleUtterance
+                });
+
+                loggerRef.current = new StructuredVoiceLogger({
+                    apiKey,
+                    schema: types,
+                    listener: listenerRef.current,
+                    maxContextEvents: 10,
+                    getRecentEvents: (n) => {
+                        // Always read from the current ref
+                        const currentStore = dataStoreRef.current;
+                        if (!currentStore) return [];
+                        
+                        return Array.from(currentStore.values())
+                            .sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt))
+                            .slice(0, n)
+                            .map(({ meta, ...event }) => event);
+                    },
+                    getRecentUtterances: () => utteranceHistory,
+                    addUtterance: (text, timestamp) => addUtterance(text, timestamp),
+                    onStructuredData: (data) => {
+                        const now = new Date();
+                        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                        const formatDate = (date) => {
+                            return format(date, "yyyy-MM-dd'T'HH:mm:ss.SSSxxx", { timeZone });
+                        };
+                        
+                        // Create new event
+                        const id = data.id || crypto.randomUUID();
+                        const { id: eventId, ...eventData } = data;
+                        const existingEvent = dataStoreRef.current?.get(id);  // Use ref here too
+                        
+                        const enrichedData = {
+                            ...eventData,
+                            id,
+                            meta: {
+                                createdAt: existingEvent?.meta?.createdAt || formatDate(now),
+                                updatedAt: formatDate(now),
+                                version: (existingEvent?.meta?.version || 0) + 1
+                            }
+                        };
+
+                        // Update dataStore using functional form
+                        setDataStore((prevStore) => {
+                            const newStore = new Map(prevStore);
+                            newStore.set(id, enrichedData);
+                            return newStore;
+                        });
+                    },
+                    onError: (error) => {
+                        setError(error.message);
+                    },
+                    onDebug: (event) => {
+                        addDebugEvent('completion', event);
+                    }
+                });
+            };
+
+            const handleToggle = () => {
+                if (!loggerRef.current || !listenerRef.current) {
+                    try {
+                        initializeLogger();
+                    } catch (error) {
+                        setError(error.message);
+                        return;
+                    }
+                }
+
+                if (isListening) {
+                    loggerRef.current.stop();
+                    setIsListening(false);
+                } else {
+                    loggerRef.current.start();
+                    setIsListening(true);
+                }
+            };
+
+            const handleClearStore = () => {
+                setDataStore(new Map());
+            };
+
+            const addDebugEvent = (type, data) => {
+                setDebugEvents(prev => [
+                    {
+                        type,
+                        data,
+                        timestamp: new Date()
+                    },
+                    ...prev
+                ].slice(0, 100)); // Keep last 100 events
+            };
+
+            const handleDeleteEvent = (id) => {
+                const newStore = new Map(dataStore);
+                newStore.delete(id);
+                setDataStore(new Map(newStore));
+            };
+
+            const handleClearUtterances = () => {
+                setUtteranceHistory([]);
+            };
+
+            useEffect(() => {
+                return () => {
+                    loggerRef.current?.stop();
+                };
+            }, []);
+
+            useEffect(() => {
+                localStorage.setItem('wakeWord', wakeWord);
+            }, [wakeWord]);
+
+            useEffect(() => {
+                localStorage.setItem('sleepWord', sleepWord);
+            }, [sleepWord]);
+
+            useEffect(() => {
+                localStorage.setItem('openaiApiKey', apiKey);
+            }, [apiKey]);
+
+            useEffect(() => {
+                if (apiKey) {
+                    try {
+                        setMicRequested(true);
+                        initializeLogger();
+                        loggerRef.current?.start();
+                        setIsListening(true);
+                    } catch (error) {
+                        setError(error.message);
+                    }
+                }
+            }, []); // Run once on mount
+
+            useEffect(() => {
+                localStorage.setItem('eventStore', JSON.stringify(Array.from(dataStore.entries())));
+            }, [dataStore]);
+
+            useEffect(() => {
+                localStorage.setItem('utteranceHistory', JSON.stringify(utteranceHistory));
+            }, [utteranceHistory]);
+
+            const EventIcon = ({ type }) => {
+                const iconClass = "w-4 h-4";
+                switch (type) {
+                    case 'FEEDING':
+                        return <Baby className={iconClass} />;
+                    case 'DIAPER':
+                        return <Droplet className={iconClass} />;
+                    case 'SLEEP':
+                        return <Moon className={iconClass} />;
+                    case 'AWAKE':
+                        return <Sun className={iconClass} />;
+                    case 'MEDICAL':
+                        return <Stethoscope className={iconClass} />;
+                    case 'GROWTH':
+                        return <Ruler className={iconClass} />;
+                    case 'MILESTONE':
+                        return <Star className={iconClass} />;
+                    default:
+                        return <Timer className={iconClass} />;
+                }
+            };
+
+            // EventCard Component
+const EventCard = ({ event, onDelete }) => {
+  const { id, eventType, subType, details, occurredAt, endedAt, notes, meta } = event;
+
+  const formatDateTime = (isoString) => {
+    const date = new Date(isoString);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+
+    if (isToday) {
+      return date.toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+    }
+
+    return date.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  };
+
+  const handleCopyJson = (e) => {
+    e.stopPropagation();
+    const { meta, ...eventWithoutMeta } = event;
+    const jsonStr = JSON.stringify(eventWithoutMeta, null, 2);
+    navigator.clipboard.writeText(jsonStr).catch((err) => console.error('Failed to copy:', err));
+  };
+
+  const renderEventContent = () => {
+    if (!eventType) return <div className="mt-1 text-xs text-gray-500">Unknown event type</div>;
+
+    switch (eventType) {
+      case 'FEEDING':
+        return <FeedingEventContent event={event} />;
+      case 'PUMPING':
+        return <PumpingEventContent event={event} />;
+      case 'DIAPER':
+        return <DiaperEventContent event={event} />;
+      case 'SLEEP':
+        return <SleepEventContent event={event} />;
+      case 'AWAKE':
+        return <AwakeEventContent event={event} />;
+      case 'MEDICAL':
+        return <MedicalEventContent event={event} />;
+      case 'GROWTH':
+        return <GrowthEventContent event={event} />;
+      case 'MILESTONE':
+        return <MilestoneEventContent event={event} />;
+      default:
+        return (
+          <div className="mt-1 space-y-1">
+            <div className="text-xs text-gray-500">
+              Unrecognized event type: <span className="font-bold">{eventType}</span>
+            </div>
+            {notes && <div className="text-xs italic text-gray-500">{notes}</div>}
+            <pre className="text-xs bg-gray-50 p-2 rounded overflow-auto">
+              {JSON.stringify(event, null, 2)}
+            </pre>
+          </div>
+        );
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-lg shadow-sm p-2 text-sm">
+      <div className="flex items-center gap-2 text-gray-600">
+        <div className="flex items-center gap-1">
+          <EventIcon type={eventType} />
+          <span className="text-xs font-semibold">{eventType}</span>
+        </div>
+        <span className="font-mono text-xs">
+          {formatDateTime(occurredAt)}
+          {endedAt && ` - ${formatDateTime(endedAt)}`}
+        </span>
+        <span className="text-xs text-gray-400 ml-auto">v{meta.version}</span>
+        <button
+          onClick={handleCopyJson}
+          className="p-1 text-gray-400 hover:text-blue-500 rounded-full hover:bg-blue-50"
+          title="Copy JSON"
+        >
+          Copy
+        </button>
+        <button
+          onClick={() => onDelete(id)}
+          className="p-1 text-gray-400 hover:text-red-500 rounded-full hover:bg-red-50"
+          title="Delete event"
+        >
+          X
+        </button>
+      </div>
+      {renderEventContent()}
+    </div>
+  );
+};
+
+// FeedingEventContent Component
+const FeedingEventContent = ({ event }) => {
+  const { subType, details, notes, occurredAt, endedAt } = event;
+
+  const duration = endedAt
+    ? Math.round((new Date(endedAt) - new Date(occurredAt)) / (1000 * 60))
+    : undefined;
+
+  const renderFeedingDetails = () => {
+    if (!details) return null;
+
+    switch (subType) {
+      case 'BOTTLE': {
+        const { contents = [], amountMlOffered, amountMlConsumed } = details;
+        const totalVolume = contents.reduce((sum, c) => sum + c.amountMl, 0);
+
+        return (
+          <div className="space-y-1.5">
+            <div className="flex items-baseline gap-2">
+              <span className="font-medium text-sm">Bottle Feed</span>
+              {duration && <span className="text-xs text-gray-500">({duration} min)</span>}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="border border-blue-200 rounded overflow-hidden">
+                <div className="bg-blue-50 px-2 py-1 text-xs font-medium text-blue-800">
+                  Contents Offered ({amountMlOffered} ml)
+                </div>
+                <div className="px-2 py-1">
+                  {contents.map((content, i) => (
+                    <div key={i} className="flex items-baseline justify-between text-xs">
+                      <span>{content.type.toLowerCase().replace(/_/g, ' ')}</span>
+                      <span className="font-medium">{content.amountMl} ml</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border border-green-200 rounded overflow-hidden">
+                <div className="bg-green-50 px-2 py-1 text-xs font-medium text-green-800">
+                  Consumed
+                </div>
+                <div className="px-2 py-1 text-xs">
+                  {amountMlConsumed !== undefined ? (
+                    <>
+                      <div className="flex justify-between">
+                        <span>Amount:</span>
+                        <span className="font-medium">{amountMlConsumed} ml</span>
+                      </div>
+                      {duration && (
+                        <div className="flex justify-between">
+                          <span>Rate:</span>
+                          <span className="font-medium">
+                            {Math.round(amountMlConsumed / duration)} ml/min
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-gray-500 italic">Unknown</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      case 'NURSING': {
+        const { attempts = [] } = details;
+        let totalNursingMinutes = 0;
+        attempts.forEach((a) => {
+          if (a.durationMinutes) totalNursingMinutes += a.durationMinutes;
+        });
+
+        return (
+          <div className="space-y-1.5">
+            <div className="flex items-baseline gap-2">
+              <span className="font-medium text-sm">Nursing</span>
+              {duration && <span className="text-xs text-gray-500">({duration} min total)</span>}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="border border-pink-200 rounded overflow-hidden">
+                <div className="bg-pink-50 px-2 py-1 text-xs font-medium text-pink-800">
+                  Attempts
+                </div>
+                <div className="divide-y divide-pink-100">
+                  {attempts.map((attempt, i) => {
+                    const attemptDuration = attempt.durationMinutes;
+                    return (
+                      <div key={i} className="px-2 py-1 text-xs space-y-1">
+                        <div className="flex justify-between items-baseline">
+                          <span className="font-medium capitalize">{attempt.side} side</span>
+                          {attemptDuration && (
+                            <span className="text-gray-500">{attemptDuration} min</span>
+                          )}
+                        </div>
+                        <div className="flex gap-2">
+                          {attempt.letdown && (
+                            <span className="px-1.5 py-0.5 bg-green-50 text-green-700 rounded-full text-[10px]">
+                              letdown
+                            </span>
+                          )}
+                          {attempt.goodLatch && (
+                            <span className="px-1.5 py-0.5 bg-green-50 text-green-700 rounded-full text-[10px]">
+                              good latch
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="border border-pink-200 rounded overflow-hidden">
+                <div className="bg-pink-50 px-2 py-1 text-xs font-medium text-pink-800">
+                  Session Summary
+                </div>
+                <div className="px-2 py-1 text-xs space-y-1">
+                  <div className="flex justify-between">
+                    <span>Total Duration:</span>
+                    <span className="font-medium">{totalNursingMinutes} min</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Attempts:</span>
+                    <span className="font-medium">{attempts.length}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      case 'SOLIDS': {
+        const { consistency, foods = [], acceptance, amountOffered } = details;
+        return (
+          <div className="space-y-1.5">
+            <div className="flex items-baseline gap-2">
+              <span className="font-medium text-sm">Solids</span>
+              {duration && <span className="text-xs text-gray-500">({duration} min)</span>}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="border border-orange-200 rounded overflow-hidden">
+                <div className="bg-orange-50 px-2 py-1 text-xs font-medium text-orange-800">
+                  Meal Details
+                </div>
+                <div className="px-2 py-1 text-xs space-y-1">
+                  <div className="flex justify-between">
+                    <span>Consistency:</span>
+                    <span className="font-medium">
+                      {consistency?.toLowerCase().replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Acceptance:</span>
+                    <span className="font-medium">{acceptance}</span>
+                  </div>
+                  {amountOffered && (
+                    <div className="flex justify-between">
+                      <span>Amount Offered:</span>
+                      <span className="font-medium">{amountOffered}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="border border-orange-200 rounded overflow-hidden">
+                <div className="bg-orange-50 px-2 py-1 text-xs font-medium text-orange-800">
+                  Foods Offered
+                </div>
+                <div className="px-2 py-1">
+                  <div className="flex flex-wrap gap-1">
+                    {foods.map((food, i) => (
+                      <span
+                        key={i}
+                        className="text-xs px-1.5 py-0.5 bg-orange-50 text-orange-700 rounded-full"
+                      >
+                        {food}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="mt-1 space-y-2">
+      {renderFeedingDetails()}
+      {notes && <div className="text-xs italic text-gray-500">{notes}</div>}
+    </div>
+  );
+};
+
+// PumpingEventContent Component
+const PumpingEventContent = ({ event }) => {
+  const { details, notes, occurredAt, endedAt } = event;
+  if (!details) return null;
+
+  const { side, durationMinutes, amountMl, letdown, method } = details;
+  const duration = endedAt
+    ? Math.round((new Date(endedAt) - new Date(occurredAt)) / (1000 * 60))
+    : durationMinutes;
+
+  return (
+    <div className="mt-1 space-y-1">
+      <div className="flex flex-wrap gap-2 items-baseline">
+        <span className="text-sm font-medium">
+          {amountMl}ml • {side} side • {duration}min
+        </span>
+        <div className="flex gap-1">
+          {method && (
+            <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-sm">
+              {method}
+            </span>
+          )}
+          {letdown && (
+            <span className="text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-sm">
+              letdown
+            </span>
+          )}
+        </div>
+      </div>
+      {duration && duration > 0 && (
+        <div className="text-xs text-gray-600">
+          Rate: {Math.round((amountMl / duration) * 10) / 10} ml/min
+        </div>
+      )}
+      {notes && <div className="text-xs italic text-gray-500">{notes}</div>}
+    </div>
+  );
+};
+
+// DiaperEventContent Component
+const DiaperEventContent = ({ event }) => {
+  const { details, notes } = event;
+  if (!details) return null;
+
+  const { urine, stool, condition } = details;
+
+  return (
+    <div className="mt-1 space-y-1.5">
+      <div className="flex flex-col gap-1.5">
+        {urine && (
+          <div className="border border-yellow-200 rounded overflow-hidden">
+            <div className="bg-yellow-50 px-2 py-1 text-xs font-medium text-yellow-800">
+              Urine
+            </div>
+            <div className="px-2 py-1 text-xs">
+              <div className="flex flex-wrap gap-1">
+                <span className="px-1.5 py-0.5 bg-yellow-50 text-yellow-700 rounded-full">
+                  {urine.volume} volume
+                </span>
+                {urine.color && (
+                  <span className="px-1.5 py-0.5 bg-yellow-50 text-yellow-700 rounded-full">
+                    {urine.color}
+                  </span>
+                )}
+                {urine.concentrated && (
+                  <span className="px-1.5 py-0.5 bg-yellow-50 text-yellow-700 rounded-full">
+                    concentrated
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {stool && (
+          <div className="border border-amber-200 rounded overflow-hidden">
+            <div className="bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
+              Stool
+            </div>
+            <div className="px-2 py-1 text-xs">
+              <div className="flex flex-wrap gap-1">
+                <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded-full">
+                  {stool.volume} volume
+                </span>
+                {stool.consistency && (
+                  <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded-full">
+                    {stool.consistency}
+                  </span>
+                )}
+                {stool.color && (
+                  <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded-full">
+                    {stool.color}
+                  </span>
+                )}
+                {stool.mucus && (
+                  <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded-full">
+                    mucus
+                  </span>
+                )}
+                {stool.blood && (
+                  <span className="px-1.5 py-0.5 bg-red-50 text-red-700 rounded-full">
+                    blood
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {condition && (
+          <div className="space-y-1.5">
+            {condition.rash && (
+              <div className="border border-red-200 rounded overflow-hidden">
+                <div className="bg-red-50 px-2 py-1 text-xs font-medium text-red-800">
+                  Rash
+                </div>
+                <div className="px-2 py-1 text-xs">
+                  <div className="flex flex-wrap gap-1">
+                    <span className="px-1.5 py-0.5 bg-red-50 text-red-700 rounded-full">
+                      {condition.rash.severity} severity
+                    </span>
+                    {condition.rash.location.map((loc, i) => (
+                      <span
+                        key={i}
+                        className="px-1.5 py-0.5 bg-red-50 text-red-700 rounded-full"
+                      >
+                        {loc}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            {condition.leakage && (
+              <div className="border border-red-200 rounded overflow-hidden">
+                <div className="bg-red-50 px-2 py-1 text-xs font-medium text-red-800">
+                  Leakage
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {notes && <div className="text-xs italic text-gray-500">{notes}</div>}
+    </div>
+  );
+};
+
+// MedicalEventContent Component
+const MedicalEventContent = ({ event }) => {
+  const { subType, details, notes } = event;
+
+  const renderMedicationDetails = (details) => {
+    const { medication, dosageAmount, dosageUnit, route } = details;
+    return (
+      <div className="border border-blue-200 rounded overflow-hidden">
+        <div className="bg-blue-50 px-2 py-1 text-xs font-medium text-blue-800 flex justify-between">
+          <span>Medication Details</span>
+        </div>
+        <div className="px-2 py-1 text-xs space-y-1">
+          <div className="flex justify-between items-baseline">
+            <span className="font-medium">{medication}</span>
+            <span className="text-blue-600">{dosageAmount} {dosageUnit}</span>
+          </div>
+          <div className="flex gap-1 mt-1">
+            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full capitalize">
+              {route}
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTemperatureDetails = (details) => {
+    const { temperature, unit, method } = details;
+    return (
+      <div className="border border-red-200 rounded overflow-hidden">
+        <div className="bg-red-50 px-2 py-1 text-xs font-medium text-red-800 flex justify-between">
+          <span>Temperature Reading</span>
+          <span className="text-red-600">{temperature}°{unit}</span>
+        </div>
+        <div className="px-2 py-1">
+          <span className="text-xs px-1.5 py-0.5 bg-red-50 text-red-700 rounded-full capitalize">
+            {method} method
+          </span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSymptomDetails = (details) => {
+    const { symptom, severity, duration } = details;
+    return (
+      <div className="border border-yellow-200 rounded overflow-hidden">
+        <div className="bg-yellow-50 px-2 py-1 text-xs font-medium text-yellow-800 flex justify-between">
+          <span>Symptom</span>
+          <span className="text-yellow-600 capitalize">{severity}</span>
+        </div>
+        <div className="px-2 py-1 text-xs space-y-1">
+          <div className="font-medium">{symptom}</div>
+          {duration && (
+            <div className="text-gray-600">
+              Duration: {duration.value} {duration.unit}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderTreatmentDetails = (details) => {
+    const { treatment, provider, followUp } = details;
+    return (
+      <div className="border border-green-200 rounded overflow-hidden">
+        <div className="bg-green-50 px-2 py-1 text-xs font-medium text-green-800">
+          Treatment Details
+        </div>
+        <div className="px-2 py-1 text-xs space-y-1">
+          <div className="font-medium">{treatment}</div>
+          {provider && (
+            <div className="text-gray-600">Provider: {provider}</div>
+          )}
+          {followUp && (
+            <div className="text-gray-600">Follow-up: {followUp}</div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderVaccinationDetails = (details) => {
+    const { vaccine, dose, site, provider } = details;
+    return (
+      <div className="border border-purple-200 rounded overflow-hidden">
+        <div className="bg-purple-50 px-2 py-1 text-xs font-medium text-purple-800 flex justify-between">
+          <span>Vaccination</span>
+          <span className="text-purple-600">Dose {dose}</span>
+        </div>
+        <div className="px-2 py-1 text-xs space-y-1">
+          <div className="font-medium">{vaccine}</div>
+          <div className="flex flex-wrap gap-1">
+            {site && (
+              <span className="px-1.5 py-0.5 bg-purple-50 text-purple-700 rounded-full">
+                {site}
+              </span>
+            )}
+            {provider && (
+              <span className="px-1.5 py-0.5 bg-purple-50 text-purple-700 rounded-full">
+                {provider}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderDetails = () => {
+    switch (subType) {
+      case 'MEDICATION':
+        return renderMedicationDetails(details);
+      case 'TEMPERATURE':
+        return renderTemperatureDetails(details);
+      case 'SYMPTOM':
+        return renderSymptomDetails(details);
+      case 'TREATMENT':
+        return renderTreatmentDetails(details);
+      case 'VACCINATION':
+        return renderVaccinationDetails(details);
+      default:
+        return (
+          <div className="text-xs text-gray-600">
+            <pre className="bg-gray-50 p-2 rounded">
+              {JSON.stringify(details, null, 2)}
+            </pre>
+          </div>
+        );
+    }
+  };
+
+  return (
+    <div className="mt-1 space-y-2">
+      {renderDetails()}
+      {notes && <div className="text-xs italic text-gray-500">{notes}</div>}
+    </div>
+  );
+};
+
+// GrowthEventContent Component
+const GrowthEventContent = ({ event }) => {
+  const { details, notes } = event;
+  if (!details) return null;
+
+  const { measurements } = details;
+
+  return (
+    <div className="mt-1 space-y-1">
+      {measurements?.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {measurements.map((m, i) => (
+            <span key={i} className="text-xs px-2 py-1 bg-green-50 text-green-700 rounded">
+              {m.type.toLowerCase().replace(/_/g, ' ')}: {m.value}{m.unit}
+            </span>
+          ))}
+        </div>
+      )}
+      {notes && <div className="text-xs italic text-gray-500">{notes}</div>}
+    </div>
+  );
+};
+
+// MilestoneEventContent Component
+const MilestoneEventContent = ({ event }) => {
+  const { details, notes } = event;
+  if (!details) return null;
+
+  const { milestone, category } = details;
+
+  return (
+    <div className="mt-1 space-y-1">
+      <div className="font-medium text-purple-600">{milestone}</div>
+      {category && (
+        <div className="text-xs text-purple-500">Category: {category}</div>
+      )}
+      {notes && <div className="text-xs italic text-gray-500">{notes}</div>}
+    </div>
+  );
+};
+
+// SleepEventContent Component
+const SleepEventContent = ({ event }) => {
+  const { details, notes } = event;
+  if (!details) return null;
+
+  const { sleepLocation } = details;
+
+  return (
+    <div className="mt-1 space-y-1">
+      {sleepLocation && (
+        <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded">
+          {sleepLocation}
+        </span>
+      )}
+      {notes && <div className="text-xs italic text-gray-500">{notes}</div>}
+    </div>
+  );
+};
+
+// AwakeEventContent Component
+const AwakeEventContent = ({ event }) => {
+  const { details, notes } = event;
+  if (!details) return null;
+
+  const { activity, mood } = details;
+
+  return (
+    <div className="mt-1 space-y-1">
+      {activity && (
+        <div className="font-medium text-yellow-600">Activity: {activity}</div>
+      )}
+      {mood && (
+        <div className="text-sm">
+          Mood: <span className="font-semibold">{mood}</span>
+        </div>
+      )}
+      {notes && <div className="text-xs italic text-gray-500">{notes}</div>}
+    </div>
+  );
+};
+
+
+            
+
+            // Add debug panel state
+            const [showDebugPanels, setShowDebugPanels] = useState(false);
+
+            // Add a function to execute code and send result
+            async function executeCodeBlock(message) {
+                const codeBlockRegex = /```js\s*([\s\S]*?)```/i;
+                const match = message.content.match(codeBlockRegex);
+                if (!match) return;
+
+                const code = match[1].trim();
+                setIsProcessing(true);
+
+                try {
+                    const result = runInSandbox(code, { localData, _: window._, Chart: window.Chart });
+                    
+                    // If result is any kind of HTML element, it's final
+                    const isFinal = result instanceof HTMLElement;
+
+                    if (isFinal) {
+                        setFinalOutput(result.outerHTML);
+                        setAutoContinue(false);
+                    } else {
+                        let truncated;
+                        let logs = [];
+                        
+                        if (result && typeof result === 'object' && 'result' in result) {
+                            truncated = Array.isArray(result.result) 
+                                ? result.result.slice(0, 5) 
+                                : result.result;
+                            logs = result.logs;
+                            setCurrentData(result.result);
+                        } else {
+                            truncated = Array.isArray(result) 
+                                ? result.slice(0, 5) 
+                                : result;
+                            setCurrentData(result);
+                        }
+
+                        // Add the result message and send to OpenAI
+                        const resultMessage = {
+                            role: 'user',
+                            content: `
+Your code returned (truncated):
+\`\`\`json
+${JSON.stringify(truncated, null, 2)}
+\`\`\`
+${logs.length > 0 ? `\nLogs:\n${logs.join('\n')}` : ''}
+
+You may produce more partial code or finalize now.`
+                        };
+                        setMessages(prev => [...prev, resultMessage]);
+                        
+                        // Send to OpenAI
+                        const openai = new OpenAI({
+                            apiKey,
+                            dangerouslyAllowBrowser: true
+                        });
+
+                        const completion = await openai.chat.completions.create({
+                            model: 'gpt-4o',
+                            messages: [...messages, resultMessage],
+                            temperature: 0.2,
+                            max_tokens: 1200
+                        });
+
+                        const assistantText = completion.choices[0]?.message?.content || '';
+                        setMessages(prev => [...prev, { role: 'assistant', content: assistantText }]);
+                    }
+                } catch (err) {
+                    const errorMsg = { role: 'system', content: `Error: ${err.message}` };
+                    setMessages(prev => [...prev, errorMsg]);
+                } finally {
+                    setIsProcessing(false);
+                }
+            }
+
+            return (
+                <div className="bg-gray-100 min-h-screen">
+                    {/* Control Panel - Fixed at top */}
+                    <div className="sticky top-0 bg-white shadow-sm z-10">
+                        <div className="max-w-7xl mx-auto px-4 py-2">
+                            {!apiKey && (
+                                <div className="text-xs text-yellow-700 mb-1">
+                                    Please enter your OpenAI API key to start voice logging
+                                </div>
+                            )}
+                            {micPermissionDenied && (
+                                <div className="text-xs text-blue-700 mb-1">
+                                    Please allow microphone access to use voice logging
+                                </div>
+                            )}
+                            <div className="flex items-center gap-4">
+                                <div className="flex items-center gap-2">
+                                    <h1 className="text-base font-semibold text-gray-900">Voice Logger</h1>
+                                    <button
+                                        onClick={handleToggle}
+                                        className={`p-1.5 rounded-full ${
+                                            isListening ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
+                                        }`}
+                                    >
+                                        {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                                    </button>
+                                    {status.isAwake && (
+                                        <div className="flex items-center gap-1 px-2 py-0.5 rounded text-green-600 bg-green-100 text-xs">
+                                            <Volume2 className="w-3 h-3" />
+                                            <span>Awake ({status.awakeningId})</span>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-4 ml-auto text-xs">
+                                    <div className="flex items-center gap-2">
+                                        <input
+                                            type="text"
+                                            value={wakeWord}
+                                            onChange={(e) => setWakeWord(e.target.value)}
+                                            className="w-24 px-2 py-1 border rounded text-xs"
+                                            placeholder="Wake word"
+                                        />
+                                        <input
+                                            type="text"
+                                            value={sleepWord}
+                                            onChange={(e) => setSleepWord(e.target.value)}
+                                            className="w-24 px-2 py-1 border rounded text-xs"
+                                            placeholder="Sleep word"
+                                        />
+                                        <input
+                                            type="password"
+                                            value={apiKey}
+                                            onChange={(e) => setApiKey(e.target.value)}
+                                            className="w-48 px-2 py-1 border rounded text-xs"
+                                            placeholder="OpenAI API key"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={() => setShowDebugPanels(!showDebugPanels)}
+                                        className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
+                                    >
+                                        {showDebugPanels ? 'Hide Debug' : 'Show Debug'}
+                                    </button>
+                                </div>
+                            </div>
+                            {error && (
+                                <div className="text-xs text-red-600 mt-1">{error}</div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Main Content Area */}
+                    <div className="max-w-7xl mx-auto p-4">
+                        <div className="grid grid-cols-12 gap-6">
+                            {/* Events Panel - Left Side */}
+                            <div className="col-span-7 space-y-4">
+                                {/* Events Panel */}
+                                <div className="bg-white rounded-xl shadow-md overflow-hidden p-6">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h2 className="text-lg font-semibold">Events</h2>
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                ref={fileInputRef}
+                                                type="file"
+                                                accept="application/json"
+                                                onChange={handleImportEvents}
+                                                className="hidden"
+                                            />
+                                            <button
+                                                onClick={() => fileInputRef.current?.click()}
+                                                className="px-3 py-1 text-sm bg-blue-100 text-blue-600 rounded hover:bg-blue-200"
+                                            >
+                                                Import
+                                            </button>
+                                            <button
+                                                onClick={handleClearStore}
+                                                className="px-3 py-1 text-sm bg-red-100 text-red-600 rounded hover:bg-red-200"
+                                            >
+                                                Clear
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-2 h-[calc(100vh-450px)] overflow-y-auto">
+                                        {Array.from(dataStore.values())
+                                            .sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt))
+                                            .map(event => (
+                                                <EventCard 
+                                                    key={event.id} 
+                                                    event={event} 
+                                                    onDelete={handleDeleteEvent} 
+                                                />
+                                            ))
+                                        }
+                                    </div>
+                                </div>
+
+                                {/* Utterance Log Panel */}
+                                <div className="bg-white rounded-xl shadow-md overflow-hidden p-6">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h2 className="text-lg font-semibold">Recent Utterances</h2>
+                                        <button
+                                            onClick={handleClearUtterances}
+                                            className="px-3 py-1 text-sm bg-red-100 text-red-600 rounded hover:bg-red-200"
+                                        >
+                                            Clear
+                                        </button>
+                                    </div>
+                                    <div className="space-y-2 h-[150px] overflow-y-auto">
+                                        {utteranceHistory.map(utterance => (
+                                            <div 
+                                                key={utterance.id}
+                                                className="flex items-center gap-2 text-sm"
+                                            >
+                                                <span className="font-mono text-xs text-gray-500">
+                                                    {new Date(utterance.timestamp).toLocaleTimeString()}
+                                                </span>
+                                                <span className="text-gray-700">{utterance.text}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Analysis Panel - Right Side */}
+                            <div className="col-span-5">
+                                <MultiStepAnalysis
+                                    apiKey={apiKey}
+                                    localData={Array.from(dataStore.values())}
+                                    typesSchema={types}
+                                />
+                            </div>
+
+                            {/* Debug Panels - Only shown when debug is enabled */}
+                            {showDebugPanels && (
+                                <>
+                                    {/* Schema Debug */}
+                                    <div className="col-span-12">
+                                        <div className="bg-white rounded-xl shadow-md overflow-hidden p-6">
+                                            <div className="flex justify-between items-center mb-4">
+                                                <h2 className="text-lg font-semibold">Schema</h2>
+                                                <span className="text-xs text-gray-500">TypeScript Interfaces</span>
+                                            </div>
+                                            <div className="h-[calc(100vh-300px)] overflow-y-auto">
+                                                <pre className="text-xs font-mono bg-gray-50 p-4 rounded whitespace-pre-wrap">
+                                                    {types}
+                                                </pre>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                                    </div>
+                                                </div>
+                                            </div>
+            );
+        };
+
+        // Add MultiStepAnalysis component
+        function MultiStepAnalysis({ apiKey, localData, typesSchema }) {
+            const [messages, setMessages] = useState([]);
+            const [userInput, setUserInput] = useState('');
+            const [finalOutput, setFinalOutput] = useState(null);
+            const [currentData, setCurrentData] = useState(localData);
+            const [autoContinue, setAutoContinue] = useState(false);
+            const [remainingTurns, setRemainingTurns] = useState(5);
+            const [isProcessing, setIsProcessing] = useState(false);
+
+            // Move executeCodeBlock inside the component and make it a const function
+            const executeCodeBlock = useCallback(async (message) => {
+                const codeBlockRegex = /```js\s*([\s\S]*?)```/i;
+                const match = message.content.match(codeBlockRegex);
+                if (!match) return;
+
+                const code = match[1].trim();
+                setIsProcessing(true);
+
+                try {
+                    const result = runInSandbox(code, { localData, _: window._, Chart: window.Chart });
+                    
+                    // If result is any kind of HTML element, it's final
+                    const isFinal = result instanceof HTMLElement;
+
+                    if (isFinal) {
+                        setFinalOutput(result.outerHTML);
+                        setAutoContinue(false);
+                    } else {
+                        let truncated;
+                        let logs = [];
+                        
+                        if (result && typeof result === 'object' && 'result' in result) {
+                            truncated = Array.isArray(result.result) 
+                                ? result.result.slice(0, 5) 
+                                : result.result;
+                            logs = result.logs;
+                            setCurrentData(result.result);
+                        } else {
+                            truncated = Array.isArray(result) 
+                                ? result.slice(0, 5) 
+                                : result;
+                            setCurrentData(result);
+                        }
+
+                        // Add the result message and send to OpenAI
+                        const resultMessage = {
+                            role: 'user',
+                            content: `
+Your code returned (truncated):
+\`\`\`json
+${JSON.stringify(truncated, null, 2)}
+\`\`\`
+${logs.length > 0 ? `\nLogs:\n${logs.join('\n')}` : ''}
+
+You may produce more partial code or finalize now.`
+                        };
+                        setMessages(prev => [...prev, resultMessage]);
+                        
+                        // Send to OpenAI
+                        const openai = new OpenAI({
+                            apiKey,
+                            dangerouslyAllowBrowser: true
+                        });
+
+                        const completion = await openai.chat.completions.create({
+                            model: 'gpt-4o',
+                            messages: [...messages, resultMessage],
+                            temperature: 0.2,
+                            max_tokens: 1200
+                        });
+
+                        const assistantText = completion.choices[0]?.message?.content || '';
+                        setMessages(prev => [...prev, { role: 'assistant', content: assistantText }]);
+                    }
+                } catch (err) {
+                    const errorMsg = { role: 'system', content: `Error: ${err.message}` };
+                    setMessages(prev => [...prev, errorMsg]);
+                } finally {
+                    setIsProcessing(false);
+                }
+            }, [messages, localData, apiKey]);
+
+            function runInSandbox(code, context) {
+                const argNames = Object.keys(context);
+                const argValues = Object.values(context);
+
+                // Log the data being passed to the sandbox
+                console.log('Executing sandbox with data:', {
+                    localData: context.localData,
+                    code
+                });
+
+                // Create a logs array to capture console.log output
+                const logs = [];
+                const mockConsole = {
+                    log: (...args) => {
+                        logs.push(args.map(arg => 
+                            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+                        ).join(' '));
+                    }
+                };
+
+                // Add mockConsole to the context
+                context.console = mockConsole;
+                argNames.push('console');
+                argValues.push(mockConsole);
+
+                // Wrap the code in a function that returns a value
+                const wrappedCode = `
+                    "use strict";
+                    return (function() {
+                        ${code}
+                    })();
+                `;
+
+                try {
+                    const fn = new Function(...argNames, wrappedCode);
+                    const result = fn(...argValues);
+                    
+                    // If there were logs, include them in the result
+                    if (logs.length > 0) {
+                        return {
+                            result,
+                            logs
+                        };
+                    }
+                    
+                    return result;
+                } catch (error) {
+                    if (logs.length > 0) {
+                        error.logs = logs;
+                    }
+                    throw error;
+                }
+            }
+
+            const systemPrompt = `
+You are a specialized newborn-tracking data analyst. 
+
+We have:
+- A JavaScript array \`localData\`, each element matching the "NewbornEvent" union from the schema below.
+- Lodash available globally at \`window._\`.
+- Chart.js available globally at \`window.Chart\`.
+
+=== BEGIN TYPE DEFINITIONS ===
+${typesSchema}
+=== END TYPE DEFINITIONS ===
+
+You can write responses that mix markdown text with embedded component blocks.
+Each component block should be wrapped in \`\`\`component ... \`\`\` and return a custom element.
+
+Example response with multiple components:
+
+Let's analyze your baby's feeding patterns over time:
+
+\`\`\`component
+// Show daily volume trend
+class VolumeChart extends HTMLElement {
+    connectedCallback() {
+        this.attachShadow({ mode: 'open' });
+        const canvas = document.createElement('canvas');
+        this.shadowRoot.appendChild(canvas);
+
+        const volumeByDay = _.chain(localData)
+            .filter(e => e.eventType === 'FEEDING')
+            .groupBy(e => e.occurredAt.split('T')[0])
+            .mapValues(events => _.sumBy(events, 
+                e => e.details.amountMlConsumed || 0))
+            .value();
+
+        new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: Object.keys(volumeByDay),
+                datasets: [{
+                    label: 'Daily Volume (ml)',
+                    data: Object.values(volumeByDay)
+                }]
+            },
+            options: { responsive: true }
+        });
+    }
+}
+customElements.define('volume-chart', VolumeChart);
+return new VolumeChart();
+\`\`\`
+
+We can see the daily intake trend above. Now let's look at the distribution by time of day:
+
+\`\`\`component
+class HourlyChart extends HTMLElement {
+    connectedCallback() {
+        this.attachShadow({ mode: 'open' });
+        const canvas = document.createElement('canvas');
+        this.shadowRoot.appendChild(canvas);
+
+        const volumeByHour = _.chain(localData)
+            .filter(e => e.eventType === 'FEEDING')
+            .groupBy(e => new Date(e.occurredAt).getHours())
+            .mapValues(events => _.sumBy(events, 
+                e => e.details.amountMlConsumed || 0))
+            .value();
+
+        new Chart(canvas, {
+            type: 'bar',
+            data: {
+                labels: Object.keys(volumeByHour),
+                datasets: [{
+                    label: 'Volume by Hour (ml)',
+                    data: Object.values(volumeByHour)
+                }]
+            },
+            options: { responsive: true }
+        });
+    }
+}
+customElements.define('hourly-chart', HourlyChart);
+return new HourlyChart();
+\`\`\`
+
+The charts above show that your baby tends to take larger feeds in the morning,
+with smaller feeds throughout the afternoon and evening.
+
+Rules:
+- Write natural responses that mix text and visualizations
+- Each \`\`\`component\`\`\` block must:
+  - Define a custom element class
+  - Register it with a unique name
+  - Return a new instance
+- Keep component code simple and focused
+- Use shadow DOM for style encapsulation
+- Add interactive features through event handlers
+`;
+
+            // Add useEffect for auto-continue
+            useEffect(() => {
+                let timeoutId;
+                if (autoContinue && remainingTurns > 0 && messages.length > 0 && !isProcessing && !finalOutput) {
+                    timeoutId = setTimeout(() => {
+                        setRemainingTurns(prev => prev - 1);
+                        sendNextTurn();
+                    }, 1500);
+                }
+                return () => clearTimeout(timeoutId);
+            }, [autoContinue, remainingTurns, messages, isProcessing, finalOutput]);
+
+            async function sendNextTurn() {
+                if (isProcessing) return;
+                setIsProcessing(true);
+                try {
+                    const openai = new OpenAI({
+                        apiKey,
+                        dangerouslyAllowBrowser: true
+                    });
+
+                    const conversation = messages.map(m => ({
+                        role: m.role,
+                        content: m.content
+                    }));
+
+                    const completion = await openai.chat.completions.create({
+                        model: 'gpt-4o',
+                        messages: conversation,
+                        temperature: 0.2,
+                        max_tokens: 1200
+                    });
+
+                    const assistantText = completion.choices[0]?.message?.content || '';
+                    const newAssistantMsg = { role: 'assistant', content: assistantText };
+                    setMessages(prev => [...prev, newAssistantMsg]);
+                } catch (err) {
+                    const errorMsg = { role: 'system', content: `OpenAI error: ${err.message}` };
+                    setMessages(prev => [...prev, errorMsg]);
+                    setAutoContinue(false);
+                } finally {
+                    setIsProcessing(false);
+                }
+            }
+
+            async function startAnalysis() {
+                // Set initial messages
+                const initialMessages = [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userInput }
+                ];
+                setMessages(initialMessages);
+                setFinalOutput(null);
+                setCurrentData(localData);
+                setRemainingTurns(5);
+
+                // Send first message immediately
+                try {
+                    const openai = new OpenAI({
+                        apiKey,
+                        dangerouslyAllowBrowser: true
+                    });
+
+                    setIsProcessing(true);
+                    const completion = await openai.chat.completions.create({
+                        model: 'gpt-4o',
+                        messages: initialMessages,
+                        temperature: 0.2,
+                        max_tokens: 1200
+                    });
+
+                    const assistantText = completion.choices[0]?.message?.content || '';
+                    const newAssistantMsg = { role: 'assistant', content: assistantText };
+                    setMessages(prev => [...prev, newAssistantMsg]);
+                } catch (err) {
+                    const errorMsg = { role: 'system', content: `OpenAI error: ${err.message}` };
+                    setMessages(prev => [...prev, errorMsg]);
+                } finally {
+                    setIsProcessing(false);
+                }
+            }
+
+            // Update the UI to disable input during auto-continue
+            return (
+                <div className="bg-white rounded-xl shadow-md overflow-hidden h-[calc(100vh-100px)] flex flex-col">
+                    <div className="p-4 border-b">
+                        <div className="flex justify-between items-center">
+                            <div>
+                                <h2 className="text-lg font-semibold">Data Analysis</h2>
+                                <p className="text-xs text-gray-600 mt-1">
+                                    Ask questions about your baby's patterns and get visualizations
+                                </p>
+                                    </div>
+                            {messages.length > 0 && !finalOutput && (
+                                <div className="flex items-center gap-2">
+                                    <label className="flex items-center gap-2 text-sm">
+                                        <input
+                                            type="checkbox"
+                                            checked={autoContinue}
+                                            onChange={(e) => setAutoContinue(e.target.checked)}
+                                            className="rounded"
+                                            disabled={isProcessing}
+                                        />
+                                        <span>Auto-continue</span>
+                                        {autoContinue && (
+                                            <span className="text-xs text-gray-500">
+                                                ({remainingTurns} turns left)
+                                            </span>
+                                        )}
+                                    </label>
+                                                </div>
+                            )}
+                                            </div>
+                                    </div>
+
+                    {/* Chat/Analysis Area */}
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                        {messages
+                            .filter(m => m.role !== 'system')
+                            .map((m, idx) => {
+                                const isAssistantMessage = m.role === 'assistant';
+
+                                if (!isAssistantMessage) {
+                                    return (
+                                        <div key={idx} className="flex justify-end">
+                                            <div className="max-w-[80%] rounded-lg p-3 bg-blue-100 text-blue-800">
+                                                <pre className="whitespace-pre-wrap text-sm font-sans">{m.content}</pre>
+                                            </div>
+                                        </div>
+                                    );
+                                }
+
+                                // Split content into text and component blocks
+                                const parts = m.content.split(/(```component[\s\S]*?```)/);
+                                
+                                return (
+                                    <div key={idx} className="flex flex-col space-y-4">
+                                        {parts.map((part, partIdx) => {
+                                            if (part.startsWith('```component')) {
+                                                const code = part.match(/```component\s*([\s\S]*?)```/)[1];
+                                                return (
+                                                    <ComponentBlock 
+                                                        key={partIdx} 
+                                                        code={code} 
+                                                        localData={localData}
+                                                    />
+                                                );
+                                            } else if (part.trim()) {
+                                                return (
+                                                    <div key={partIdx} className="flex justify-start">
+                                                        <div className="max-w-[80%] rounded-lg p-3 bg-gray-100 text-gray-800">
+                                                            <div className="prose prose-sm">
+                                                                <pre className="whitespace-pre-wrap text-sm font-sans">{part}</pre>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            }
+                                            return null;
+                                        })}
+                                    </div>
+                                );
+                            })}
+                        
+                        {/* Final Output Area */}
+                        {finalOutput && (
+                            <div className="flex justify-start w-full">
+                                <div className="bg-green-50 rounded-lg p-4 w-full">
+                                    <div
+                                        className="bg-white rounded border p-4"
+                                        dangerouslySetInnerHTML={{ __html: finalOutput }}
+                                    />
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Processing Indicator */}
+                        {isProcessing && (
+                            <div className="flex justify-center">
+                                <div className="text-sm text-gray-500 animate-pulse">
+                                    {autoContinue ? 'Auto-continuing...' : 'Processing...'}
+                        </div>
+                    </div>
+                        )}
+                                                    </div>
+
+                    {/* Input Area - Hidden during auto-continue */}
+                    {(!autoContinue || finalOutput) && (
+                        <div className="p-4 border-t bg-gray-50">
+                            <div className="flex gap-2">
+                                <input
+                                    type="text"
+                                    className="flex-1 px-3 py-2 border rounded-lg text-sm"
+                                    placeholder="Ask about patterns (e.g., 'Show feeding amounts by hour')"
+                                    value={userInput}
+                                    onChange={(e) => setUserInput(e.target.value)}
+                                    onKeyPress={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey && userInput.trim()) {
+                                            e.preventDefault();
+                                            if (messages.length === 0) {
+                                                startAnalysis();
+                                            } else {
+                                                // Add the user's message to the conversation
+                                                setMessages(prev => [...prev, { role: 'user', content: userInput }]);
+                                                setUserInput('');
+                                            }
+                                        }
+                                    }}
+                                    disabled={isProcessing}
+                                />
+                                {messages.length === 0 ? (
+                                    <button
+                                        className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+                                        onClick={startAnalysis}
+                                        disabled={isProcessing || !userInput.trim()}
+                                    >
+                                        Ask
+                                    </button>
+                                ) : (
+                                    <button
+                                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 disabled:opacity-50"
+                                        onClick={() => {
+                                            if (userInput.trim()) {
+                                                // Add the user's message and send to OpenAI
+                                                const newMessage = { role: 'user', content: userInput };
+                                                setMessages(prev => [...prev, newMessage]);
+                                                setUserInput('');
+                                                
+                                                // Reset final output if any
+                                                setFinalOutput(null);
+                                                
+                                                // Send to OpenAI immediately
+                                                const openai = new OpenAI({
+                                                    apiKey,
+                                                    dangerouslyAllowBrowser: true
+                                                });
+                                                
+                                                setIsProcessing(true);
+                                                openai.chat.completions.create({
+                                                    model: 'gpt-4o',
+                                                    messages: [...messages, newMessage],
+                                                    temperature: 0.2,
+                                                    max_tokens: 1200
+                                                }).then(completion => {
+                                                    const assistantText = completion.choices[0]?.message?.content || '';
+                                                    setMessages(prev => [...prev, { role: 'assistant', content: assistantText }]);
+                                                }).catch(err => {
+                                                    setMessages(prev => [...prev, { role: 'system', content: `OpenAI error: ${err.message}` }]);
+                                                }).finally(() => {
+                                                    setIsProcessing(false);
+                                                });
+                                            }
+                                        }}
+                                        disabled={isProcessing || !userInput.trim()}
+                                    >
+                                        Send
+                                    </button>
+                            )}
+                                                </div>
+                            <p className="text-xs text-gray-500 mt-2">
+                                Press Enter to send • Click "Respond with result" on code blocks to execute them
+                            </p>
+                                    </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Add AutoRunCode component before the MultiStepAnalysis component
+        function AutoRunCode({ message, localData, onExecute }) {
+            const [result, setResult] = useState(null);
+            const [error, setError] = useState(null);
+
+            // Define runInSandbox within component scope
+            function runInSandbox(code, context) {
+                const logs = [];
+                const mockConsole = {
+                    log: (...args) => {
+                        logs.push(args.map(arg => 
+                            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+                        ).join(' '));
+                    }
+                };
+
+                try {
+                    const fn = new Function(
+                        'localData', '_', 'Chart', 'console',
+                        `"use strict";
+                        return (function() {
+                            ${code}
+                        })();`
+                    );
+                    const result = fn(context.localData, context._, context.Chart, mockConsole);
+                    return logs.length > 0 ? { result, logs } : result;
+                } catch (error) {
+                    error.logs = logs;
+                    throw error;
+                }
+            }
+
+            useEffect(() => {
+                const codeBlockRegex = /```js\s*([\s\S]*?)```/i;
+                const match = message.content.match(codeBlockRegex);
+                if (!match) return;
+
+                const code = match[1].trim();
+                try {
+                    const result = runInSandbox(code, { localData, _: window._, Chart: window.Chart });
+                    let truncated;
+                    let logs = [];
+                    
+                    if (result && typeof result === 'object' && 'result' in result) {
+                        truncated = Array.isArray(result.result) 
+                            ? result.result.slice(0, 5) 
+                            : result.result;
+                        logs = result.logs;
+                    } else {
+                        truncated = Array.isArray(result) 
+                            ? result.slice(0, 5) 
+                            : result;
+                    }
+
+                    setResult({
+                        data: truncated,
+                        logs
+                    });
+                } catch (err) {
+                    setError(err.message);
+                }
+            }, [message, localData]);
+
+            if (error) {
+                return (
+                    <>
+                        <div className="text-xs text-red-500 italic bg-red-50 p-2 rounded">
+                            Error: {error}
+                            </div>
+                        <button
+                            onClick={() => onExecute(message)}
+                            className="self-end px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                        >
+                            Submit error
+                        </button>
+                    </>
+                );
+            }
+
+            if (!result) {
+                return (
+                    <div className="text-xs text-gray-500 italic">
+                        Running code...
+                        </div>
+                );
+            }
+
+            return (
+                <>
+                    <div className="text-xs text-gray-500 italic bg-gray-50 p-2 rounded space-y-2">
+                        <div>
+                            <strong>Result:</strong>
+                            <pre className="mt-1 text-gray-600">
+                                {JSON.stringify(result.data, null, 2)}
+                            </pre>
+                    </div>
+                        {result.logs.length > 0 && (
+                            <div>
+                                <strong>Logs:</strong>
+                                <pre className="mt-1 text-gray-600">
+                                    {result.logs.join('\n')}
+                                </pre>
+                </div>
+                        )}
+                    </div>
+                    <button
+                        onClick={() => onExecute(message)}
+                        className="self-end px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                    >
+                        Submit response
+                    </button>
+                </>
+            );
+        }
+
+        // Add ComponentBlock component before MultiStepAnalysis
+        function ComponentBlock({ code, localData }) {
+            const [activeTab, setActiveTab] = useState('rendered');
+            const containerRef = useRef(null);
+
+            function runInSandbox(code, context) {
+                const logs = [];
+                const mockConsole = {
+                    log: (...args) => {
+                        logs.push(args.map(arg => 
+                            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+                        ).join(' '));
+                    }
+                };
+
+                try {
+                    const fn = new Function(
+                        'localData', '_', 'Chart', 'console',
+                        `"use strict";
+                        return (function() {
+                            ${code}
+                        })();`
+                    );
+                    const result = fn(context.localData, context._, context.Chart, mockConsole);
+                    return logs.length > 0 ? { result, logs } : result;
+                } catch (error) {
+                    error.logs = logs;
+                    throw error;
+                }
+            }
+
+            useEffect(() => {
+                if (activeTab === 'rendered' && containerRef.current) {
+                    try {
+                        const result = runInSandbox(code, { localData, _: window._, Chart: window.Chart });
+                        if (result instanceof HTMLElement) {
+                            containerRef.current.innerHTML = '';
+                            containerRef.current.appendChild(result);
+                        }
+                    } catch (error) {
+                        console.error('Failed to render component:', error);
+                        containerRef.current.innerHTML = `<div class="text-red-500 text-xs">Error: ${error.message}</div>`;
+                    }
+                }
+            }, [activeTab, code, localData]);
+
+            return (
+                <div className="flex justify-start">
+                    <div className="max-w-[80%] w-full rounded-lg overflow-hidden border border-gray-200">
+                        {/* Tab buttons */}
+                        <div className="flex border-b border-gray-200">
+                            <button
+                                onClick={() => setActiveTab('rendered')}
+                                className={`px-4 py-2 text-sm ${
+                                    activeTab === 'rendered'
+                                        ? 'bg-white border-b-2 border-blue-500 text-blue-600'
+                                        : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                                }`}
+                            >
+                                Rendered
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('source')}
+                                className={`px-4 py-2 text-sm ${
+                                    activeTab === 'source'
+                                        ? 'bg-white border-b-2 border-blue-500 text-blue-600'
+                                        : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                                }`}
+                            >
+                                Source
+                            </button>
+                        </div>
+                        
+                        {/* Tab content */}
+                        <div className="p-4 bg-white">
+                            {activeTab === 'source' ? (
+                                <pre className="whitespace-pre-wrap text-xs font-mono text-gray-600">{code}</pre>
+                            ) : (
+                                <div ref={containerRef} className="min-h-[100px]" />
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Render the app
+        createRoot(document.getElementById('root')).render(
+            <React.StrictMode>
+                <VoiceLoggerApp />
+            </React.StrictMode>
+        );
+    </script>
+</body>
+</html>
