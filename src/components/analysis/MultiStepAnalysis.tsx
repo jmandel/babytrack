@@ -155,7 +155,7 @@ const InputBox = React.memo(({
   initialValue?: string 
 }) => {
   const [input, setInput] = useState(initialValue);
-  const inputRef = React.useRef<HTMLTextAreaElement>();
+  const inputRef = React.useRef<HTMLTextAreaElement>(null);
 
   // Update input when initialValue changes
   React.useEffect(() => {
@@ -171,7 +171,7 @@ const InputBox = React.memo(({
     }
   }, [initialValue]);
 
-  return (
+    return (
     <Box sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
       <Box sx={{ display: 'flex', gap: 1 }}>
         <TextField
@@ -205,8 +205,8 @@ const InputBox = React.memo(({
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
         Press Enter to send • Code blocks will execute automatically
-      </Typography>
-    </Box>
+        </Typography>
+      </Box>
   );
 });
 
@@ -222,83 +222,83 @@ const MessageList = React.memo(({
   <>
     {messages.filter(m => m.role !== 'system').map((message) => (
       <Box key={`message-${message.role}-${message.content.slice(0, 20)}`} sx={{ mb: 2 }}>
-        {message.role === 'user' ? (
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Box sx={{ 
-              maxWidth: '80%',
-              p: 1.5,
-              bgcolor: 'primary.light',
-              color: 'primary.contrastText',
-              borderRadius: 2
-            }}>
-              <Typography variant="body2">{message.content}</Typography>
-            </Box>
-          </Box>
-        ) : (
-          <Box sx={{ 
-            maxWidth: '80%',
-            p: 1.5,
-            bgcolor: 'grey.100',
-            borderRadius: 2,
-            '& .markdown-content': {
-              '& p': { 
-                m: 0,
-                mb: 1,
-                '&:last-child': {
-                  mb: 0
-                }
-              },
-              '& pre': { 
-                m: 0,
-                mt: 1,
-                mb: 1,
+            {message.role === 'user' ? (
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <Box sx={{ 
+                  maxWidth: '80%',
+                  p: 1.5,
+                  bgcolor: 'primary.light',
+                  color: 'primary.contrastText',
+                  borderRadius: 2
+                }}>
+                  <Typography variant="body2">{message.content}</Typography>
+                </Box>
+              </Box>
+            ) : (
+              <Box sx={{ 
+                maxWidth: '80%',
                 p: 1.5,
-                bgcolor: 'grey.50',
-                borderRadius: 1,
-                fontSize: '0.875rem',
-                fontFamily: 'monospace',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                '&:last-child': {
-                  mb: 0
+                bgcolor: 'grey.100',
+                borderRadius: 2,
+                '& .markdown-content': {
+                  '& p': { 
+                    m: 0,
+                    mb: 1,
+                    '&:last-child': {
+                      mb: 0
+                    }
+                  },
+                  '& pre': { 
+                    m: 0,
+                    mt: 1,
+                    mb: 1,
+                    p: 1.5,
+                    bgcolor: 'grey.50',
+                    borderRadius: 1,
+                    fontSize: '0.875rem',
+                    fontFamily: 'monospace',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    '&:last-child': {
+                      mb: 0
+                    }
+                  },
+                  '& code': {
+                    p: 0.5,
+                    bgcolor: 'grey.50',
+                    borderRadius: 0.5,
+                    fontSize: '0.875rem',
+                    fontFamily: 'monospace'
+                  },
+                  '& ul, & ol': {
+                    m: 0,
+                    mb: 1,
+                    pl: 2,
+                    '&:last-child': {
+                      mb: 0
+                    }
+                  },
+                  '& h1, & h2, & h3, & h4, & h5, & h6': {
+                    fontSize: '1rem',
+                    fontWeight: 'bold',
+                    m: 0,
+                    mb: 1,
+                    '&:last-child': {
+                      mb: 0
+                    }
+                  }
                 }
-              },
-              '& code': {
-                p: 0.5,
-                bgcolor: 'grey.50',
-                borderRadius: 0.5,
-                fontSize: '0.875rem',
-                fontFamily: 'monospace'
-              },
-              '& ul, & ol': {
-                m: 0,
-                mb: 1,
-                pl: 2,
-                '&:last-child': {
-                  mb: 0
-                }
-              },
-              '& h1, & h2, & h3, & h4, & h5, & h6': {
-                fontSize: '1rem',
-                fontWeight: 'bold',
-                m: 0,
-                mb: 1,
-                '&:last-child': {
-                  mb: 0
-                }
-              }
-            }
-          }}>
+              }}>
             <MessageContent message={message} events={events} />
+              </Box>
+            )}
+          </Box>
+        ))}
+        {isProcessing && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+            <CircularProgress size={24} />
           </Box>
         )}
-      </Box>
-    ))}
-    {isProcessing && (
-      <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
-        <CircularProgress size={24} />
-      </Box>
-    )}
   </>
 ));
 
@@ -386,7 +386,7 @@ const TestVizBox = React.memo(({ events }: { events: NewbornEvent[] }) => {
           {code && <VizBlock code={code} events={events} />}
         </>
       )}
-    </Box>
+        </Box>
   );
 });
 

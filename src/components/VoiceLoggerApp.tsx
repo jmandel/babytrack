@@ -10,6 +10,24 @@ import { ImportEventsDialog } from './ImportEventsDialog';
 import { EventCard } from '@/components/events/EventCard';
 import { MultiStepAnalysis } from '@/components/analysis/MultiStepAnalysis';
 import { BreastVolumeDisplay } from './BreastVolumeDisplay';
+import { NewbornEvent } from '@/types/newbornTracker';
+
+// Memoized EventsList component
+const EventsList = React.memo(({ events, onDelete }: { events: NewbornEvent[], onDelete: (id: string) => void }) => {
+  return (
+    <>
+      {events.map((event) => (
+        <EventCard
+          key={event.id}
+          event={event}
+          onDelete={() => onDelete(event.id!)}
+        />
+      ))}
+    </>
+  );
+});
+
+EventsList.displayName = 'EventsList';
 
 export function VoiceLoggerApp() {
   const {
@@ -55,7 +73,13 @@ export function VoiceLoggerApp() {
           <Box sx={{ display: 'flex', gap: 0.5 }}>
             <div className="flex items-center gap-1">
                     <button
-                onClick={() => setIsListening(!isListening)}
+                onClick={() => {
+                  if (isListening && !voiceStatus.isAwake) {
+                    setIsListening(false);
+                  } else {
+                    setIsListening(!isListening);
+                  }
+                }}
                 className={`p-2 rounded-full transition-colors ${
                   micPermissionDenied
                     ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
@@ -218,13 +242,7 @@ export function VoiceLoggerApp() {
       {/* Events List */}
       {events.length > 0 && (
         <>
-                {events.map((event) => (
-                    <EventCard
-                        key={event.id}
-                        event={event}
-              onDelete={() => deleteEvent(event.id!)}
-                    />
-                ))}
+          <EventsList events={events} onDelete={deleteEvent} />
           <Box sx={{ mt: 2 }}>
             <MultiStepAnalysis events={events} apiKey={apiKey} model="gpt-4o" />
           </Box>

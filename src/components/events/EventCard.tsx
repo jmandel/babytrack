@@ -68,18 +68,20 @@ export function EventCard({ event, onDelete }: EventCardProps) {
         return <GrowthEventContent event={event} />;
       case EventType.Milestone:
         return <MilestoneEventContent event={event} />;
-      default:
+      default: {
+        const unknownEvent = event as NewbornEvent & { eventType: string };
         return (
           <div className="mt-1 space-y-1">
             <div className="text-xs text-gray-500">
-              Unrecognized event type: <span className="font-bold">{event.eventType}</span>
+              Unrecognized event type: <span className="font-bold">{unknownEvent.eventType}</span>
             </div>
-            {event.notes && <div className="text-xs italic text-gray-500">{event.notes}</div>}
+            {unknownEvent.notes && <div className="text-xs italic text-gray-500">{unknownEvent.notes}</div>}
             <pre className="text-xs bg-gray-50 p-2 rounded overflow-auto">
-              {JSON.stringify(event, null, 2)}
+              {JSON.stringify(unknownEvent, null, 2)}
             </pre>
           </div>
         );
+      }
     }
   };
 

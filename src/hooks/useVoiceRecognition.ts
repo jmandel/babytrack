@@ -3,6 +3,7 @@ import { WakeWordListener } from "@/lib/WakeWordListener";
 import { StructuredVoiceLogger } from "@/lib/StructuredVoiceLogger";
 import { schema } from "@/generated/schema";
 import { NewbornEvent } from '@/types/newbornTracker';
+import { Snackbar } from '@mui/material';
 
 interface VoiceRecognitionState {
   isListening: boolean;
@@ -17,6 +18,9 @@ interface VoiceRecognitionState {
   debugSetWakeState: (isAwake: boolean) => void;
   debugSimulateUtterance: (text: string) => void;
   listenerRef: React.RefObject<WakeWordListener | null>;
+  toastOpen: boolean;
+  setToastOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  currentUtterance: string;
 }
 
 interface VoiceRecognitionConfig {
@@ -25,6 +29,8 @@ interface VoiceRecognitionConfig {
   sleepWord: string;
   events: NewbornEvent[];
   onNewEvent: (event: NewbornEvent) => void;
+  isListening: boolean;
+  setIsListening: (isListening: boolean) => void;
 }
 
 export function useVoiceRecognition({
@@ -33,9 +39,10 @@ export function useVoiceRecognition({
   sleepWord,
   events,
   onNewEvent,
+  isListening,
+  setIsListening,
 }: VoiceRecognitionConfig): VoiceRecognitionState {
   // Voice control state
-  const [isListening, setIsListening] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState({ isAwake: false, awakeningId: 0 });
   const [error, setError] = useState('');
   const [micPermissionDenied, setMicPermissionDenied] = useState(false);
@@ -43,6 +50,8 @@ export function useVoiceRecognition({
     const stored = localStorage.getItem('utteranceHistory');
     return stored ? JSON.parse(stored) : [];
   });
+  const [toastOpen, setToastOpen] = useState(false);
+  const [currentUtterance, setCurrentUtterance] = useState('');
 
   // Refs for latest state
   const eventsRef = useRef<NewbornEvent[]>(events);
@@ -222,6 +231,10 @@ export function useVoiceRecognition({
         setError(error.message);
       },
       onDebug: (event) => {
+        if (event.event === 'utterance-to-llm') {
+          setCurrentUtterance(event.utterance);
+          setToastOpen(true);
+        }
         console.log('=== LLM/Voice logger debug event ===');
         console.log(event);
         console.log('==================================');
@@ -272,6 +285,8 @@ export function useVoiceRecognition({
     } else {
       console.log('Stopping voice recognition');
       listener.stop();
+      // Also reset wake state when stopping
+      setVoiceStatus({ isAwake: false, awakeningId: 0 });
     }
   }, [isListening]);
 
@@ -289,5 +304,8 @@ export function useVoiceRecognition({
       listenerRef.current?.debugSimulateUtterance(text);
     }, []),
     listenerRef,
+    toastOpen,
+    setToastOpen,
+    currentUtterance,
   };
 } 

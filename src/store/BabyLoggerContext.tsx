@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { NewbornEvent } from '@/types/newbornTracker';
 import { useVoiceRecognition } from '@/hooks/useVoiceRecognition';
+import { Snackbar } from '@mui/material';
 
 interface SavedVisualization {
   id: string;
@@ -36,6 +37,9 @@ interface BabyLoggerState {
   // Debug methods
   debugSetWakeState: (isAwake: boolean) => void;
   debugSimulateUtterance: (text: string) => void;
+  toastOpen: boolean;
+  setToastOpen: (open: boolean) => void;
+  currentUtterance: string;
 }
 
 const BabyLoggerContext = createContext<BabyLoggerState | null>(null);
@@ -65,24 +69,31 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
 
   const [manualListening, setManualListening] = useState(false);
 
-  const addEvent = (event: NewbornEvent) => {
+  const addEvent = useCallback((event: NewbornEvent) => {
     console.log('Adding/updating event:', event.id);
     setEvents(prev => {
+      let newEvents;
+      
       // If event has an ID and already exists, update it
       if (event.id && prev.some(e => e.id === event.id)) {
         console.log('Updating existing event:', event.id);
-        return prev.map(e => e.id === event.id ? event : e);
+        newEvents = prev.map(e => e.id === event.id ? { ...event } : e);
+      } else {
+        // If it's a new event, ensure it has a unique ID
+        const newEvent = {
+          ...event,
+          id: event.id || crypto.randomUUID()
+        };
+        console.log('Adding new event:', newEvent.id);
+        newEvents = [...prev, newEvent];
       }
       
-      // If it's a new event, ensure it has a unique ID
-      if (!event.id) {
-        event.id = crypto.randomUUID();
-      }
-      
-      console.log('Adding new event:', event.id);
-      return [...prev, event];
+      // Sort events by occurredAt timestamp, most recent first
+      return newEvents.sort((a, b) => 
+        new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()
+      );
     });
-  };
+  }, []);
 
   const deleteEvent = (eventId: string) => {
     setEvents(prev => prev.filter(event => event.id !== eventId));
@@ -136,12 +147,17 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
     utterances,
     clearUtterances,
     listenerRef,
+    toastOpen,
+    setToastOpen,
+    currentUtterance,
   } = useVoiceRecognition({
     apiKey,
     wakeWord,
     sleepWord,
     events,
     onNewEvent: addEvent,
+    isListening: manualListening,
+    setIsListening: setManualListening,
   });
 
   const value: BabyLoggerState = {
@@ -149,7 +165,7 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
     wakeWord,
     sleepWord,
     apiKey,
-    isListening: isListening || manualListening,
+    isListening: manualListening,
     voiceStatus,
     error,
     micPermissionDenied,
@@ -171,10 +187,26 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
     debugSimulateUtterance: useCallback((text: string) => {
       listenerRef.current?.debugSimulateUtterance(text);
     }, [listenerRef]),
+    toastOpen,
+    setToastOpen,
+    currentUtterance,
   };
 
   return (
     <BabyLoggerContext.Provider value={value}>
+      <Snackbar
+        open={toastOpen}
+        autoHideDuration={3000}
+        onClose={() => setToastOpen(false)}
+        message={currentUtterance}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        sx={{
+          '& .MuiSnackbarContent-root': {
+            bgcolor: 'primary.main',
+            minWidth: '300px'
+          }
+        }}
+      />
       {children}
     </BabyLoggerContext.Provider>
   );
