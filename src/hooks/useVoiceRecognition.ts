@@ -4,6 +4,7 @@ import { StructuredVoiceLogger } from "@/lib/StructuredVoiceLogger";
 import { schema } from "@/generated/schema";
 import { NewbornEvent } from '@/types/newbornTracker';
 import { Snackbar } from '@mui/material';
+import { MicState, MicContext } from "@/lib/MicStateMachine";
 
 interface VoiceRecognitionState {
   isListening: boolean;
@@ -112,12 +113,6 @@ export function useVoiceRecognition({
         if (error.message.includes('Permission denied') || error.message.includes('not allowed')) {
           setMicPermissionDenied(true);
           setIsListening(false);
-        } else {
-          // For other errors, try to restart listening if we're supposed to be active
-          if (isListening && listenerRef.current) {
-            console.log('Restarting after error');
-            listenerRef.current.start();
-          }
         }
       },
       onUtterance: (utterance) => {
@@ -127,43 +122,12 @@ export function useVoiceRecognition({
           text: utterance.text,
           timestamp
         }, ...prev.slice(0, 9)]);
-        // Restart listening after processing the utterance
-        if (listenerRef.current) {
-          console.log('Restarting after utterance');
-          listenerRef.current.start();
-        }
       },
       onDebug: (event) => {
         console.log('Speech event:', event);
-        // Restart listening after end events if we're supposed to be active
-        if (event.event?.includes('end') && isListening && listenerRef.current) {
-          console.log('Restarting after end event');
-          listenerRef.current.start();
-        }
       }
     });
     listenerRef.current = listener;
-
-    // Request microphone permissions if not already granted
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      console.log('Requesting microphone permission...');
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then(() => {
-          console.log('Microphone permission granted');
-          setMicPermissionDenied(false);
-          setError('');
-          setIsListening(true);
-        })
-        .catch((err) => {
-          console.error('Failed to get microphone permission:', err);
-          setMicPermissionDenied(true);
-          setError('Microphone permission denied. Please allow access to use voice features.');
-          setIsListening(false);
-        });
-    } else {
-      console.error('Voice recognition not supported');
-      setError('Voice recognition is not supported in this browser.');
-    }
 
     return () => {
       console.log('Cleaning up WakeWordListener');
@@ -285,8 +249,6 @@ export function useVoiceRecognition({
     } else {
       console.log('Stopping voice recognition');
       listener.stop();
-      // Also reset wake state when stopping
-      setVoiceStatus({ isAwake: false, awakeningId: 0 });
     }
   }, [isListening]);
 

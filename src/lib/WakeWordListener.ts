@@ -42,19 +42,19 @@ export interface WakeWordListenerConfig {
     onDebug?: (event: any) => void;
 }
 
+import { MicStateMachine, MicState, MicContext } from './MicStateMachine';
+
 export class WakeWordListener {
     private recognition: SpeechRecognition;
     private wakeWord: string;
     private sleepWord: string;
-    private isAwake: boolean = false;
-    private awakeningId: number = 0;
     private onStateChange: (state: { isAwake: boolean; awakeningId: number }) => void;
     private onError: (error: Error) => void;
     private onUtterance?: (utterance: { text: string }) => void;
     private onDebug?: (event: any) => void;
-    private isListening: boolean = false;
-    private isPaused: boolean = false;
     private restartTimeout: number | null = null;
+    private stateMachine: MicStateMachine;
+    private recognitionActive: boolean = false;
 
     constructor(config: WakeWordListenerConfig) {
         console.log('Initializing WakeWordListener with config:', config);
@@ -64,6 +64,19 @@ export class WakeWordListener {
         this.onError = config.onError;
         this.onUtterance = config.onUtterance;
         this.onDebug = config.onDebug;
+
+        // Initialize state machine
+        this.stateMachine = new MicStateMachine({
+            onStateChange: (state: MicState, context: MicContext) => {
+                this.onStateChange({
+                    isAwake: state === 'AWAKE',
+                    awakeningId: context.awakeningId
+                });
+            },
+            onError: (error: string) => {
+                this.onError(new Error(error));
+            }
+        });
 
         try {
             // Check for browser support
@@ -130,7 +143,7 @@ export class WakeWordListener {
 
     private handleResult(event: SpeechRecognitionEvent) {
         const current = event.resultIndex;
-        const transcript = event.results[current][0].transcript.toLowerCase();
+        const transcript = event.results[current][0].transcript.toLowerCase().trim();
         const confidence = event.results[current][0].confidence;
         const isFinal = event.results[current].isFinal;
 
@@ -138,7 +151,7 @@ export class WakeWordListener {
             transcript,
             confidence,
             isFinal,
-            isAwake: this.isAwake
+            isAwake: this.stateMachine.isAwake()
         });
 
         this.onDebug?.({
@@ -146,20 +159,19 @@ export class WakeWordListener {
             transcript,
             confidence,
             isFinal,
-            isAwake: this.isAwake
+            isAwake: this.stateMachine.isAwake()
         });
 
         if (!isFinal) return;
 
-        // Wake word detection
-        if (!this.isAwake && transcript.includes(this.wakeWord)) {
+        // Wake word detection - check if wake word is anywhere in the transcript
+        if (!this.stateMachine.isAwake() && transcript.includes(this.wakeWord)) {
             console.log('Wake word detected:', this.wakeWord);
-            this.isAwake = true;
-            this.awakeningId++;
-            this.onStateChange({ isAwake: true, awakeningId: this.awakeningId });
+            this.stateMachine.wake();
             
-            // Emit content after wake word if any
-            const afterWake = transcript.split(this.wakeWord)[1]?.trim();
+            // Split transcript around wake word and process any content after it
+            const parts = transcript.split(this.wakeWord);
+            const afterWake = parts[parts.length - 1]?.trim();
             if (afterWake && !afterWake.includes(this.sleepWord)) {
                 console.log('Processing content after wake word:', afterWake);
                 this.onUtterance?.({ text: afterWake });
@@ -167,57 +179,62 @@ export class WakeWordListener {
             return;
         }
 
-        // Sleep word detection
-        if (this.isAwake && transcript.includes(this.sleepWord)) {
+        // Sleep word detection - check if sleep word is anywhere in the transcript
+        if (this.stateMachine.isAwake() && transcript.includes(this.sleepWord)) {
             console.log('Sleep word detected:', this.sleepWord);
-            const beforeSleep = transcript.split(this.sleepWord)[0]?.trim();
+            
+            // Split transcript around sleep word and process any content before it
+            const parts = transcript.split(this.sleepWord);
+            const beforeSleep = parts[0]?.trim();
             if (beforeSleep && !beforeSleep.includes(this.wakeWord)) {
                 console.log('Processing content before sleep word:', beforeSleep);
                 this.onUtterance?.({ text: beforeSleep });
             }
             
-            this.isAwake = false;
-            this.onStateChange({ isAwake: false, awakeningId: this.awakeningId });
+            this.stateMachine.sleep();
             return;
         }
 
         // Normal utterance when awake
-        if (this.isAwake) {
+        if (this.stateMachine.isAwake()) {
             console.log('Processing normal utterance:', transcript);
             this.onUtterance?.({ text: transcript });
+        } else if (transcript === this.wakeWord) {
+            // Handle exact wake word match
+            console.log('Exact wake word match detected');
+            this.stateMachine.wake();
+        } else if (transcript === this.sleepWord) {
+            // Handle exact sleep word match
+            console.log('Exact sleep word match detected');
+            this.stateMachine.sleep();
         }
     }
 
     private handleError(event: SpeechRecognitionErrorEvent) {
         console.error('Speech recognition error:', event.error);
-        this.onError(new Error(`Speech recognition error: ${event.error}`));
         
         if (event.error === 'not-allowed' || event.error === 'permission-denied') {
-            this.setListening(false, `error: ${event.error}`);
+            this.stateMachine.permissionDenied();
             return;
         }
+
+        this.onError(new Error(`Speech recognition error: ${event.error}`));
         
-        // If we get an error while listening, try to restart
-        if (this.isListening && !this.isPaused) {
+        // If we get an error while listening and we're not disabled, try to restart
+        if (!this.stateMachine.isDisabled()) {
             console.log('Attempting to restart after error');
             this.restartRecognition();
         }
     }
 
     private handleEnd() {
-        console.log('Recognition ended, isListening:', this.isListening, 'isPaused:', this.isPaused);
+        console.log('Recognition ended, state:', this.stateMachine.getState());
+        this.recognitionActive = false;
         
-        // If we should be listening, restart recognition
-        if (this.isListening && !this.isPaused) {
+        // If we should be listening (not disabled), restart recognition
+        if (!this.stateMachine.isDisabled()) {
             console.log('Recognition ended but should be listening - scheduling restart');
             this.restartRecognition();
-        } else if (!this.isListening) {
-            // Only update wake state if we're intentionally stopping
-            console.log('Recognition ended - stopping (was explicitly stopped)');
-            this.isAwake = false;
-            this.onStateChange({ isAwake: false, awakeningId: this.awakeningId });
-        } else {
-            console.log('Recognition ended in unexpected state:', { isListening: this.isListening, isPaused: this.isPaused });
         }
     }
 
@@ -229,14 +246,14 @@ export class WakeWordListener {
         }
 
         this.restartTimeout = window.setTimeout(() => {
-            if (!this.isListening || this.isPaused) {
-                console.log('Not restarting recognition - no longer listening or paused');
+            if (this.stateMachine.isDisabled() || this.recognitionActive) {
+                console.log('Not restarting recognition - disabled or already active');
                 return;
             }
 
             console.log('Restarting recognition after end event');
             try {
-                this.recognition.start();
+                this.startRecognition();
             } catch (error) {
                 console.error('Error restarting recognition:', error);
                 // If we fail to restart, try again after a longer delay
@@ -245,12 +262,46 @@ export class WakeWordListener {
                     this.restartTimeout = null;
                 }
                 this.restartTimeout = window.setTimeout(() => {
-                    if (this.isListening && !this.isPaused) {
+                    if (!this.stateMachine.isDisabled() && !this.recognitionActive) {
                         this.restartRecognition();
                     }
                 }, 1000);
             }
         }, 100);
+    }
+
+    private async startRecognition() {
+        if (this.recognitionActive) {
+            console.log('Recognition already active, skipping start');
+            return;
+        }
+
+        try {
+            await this.recognition.start();
+            this.recognitionActive = true;
+            console.log('Started speech recognition');
+        } catch (error) {
+            console.error('Failed to start recognition:', error);
+            this.recognitionActive = false;
+            throw error;
+        }
+    }
+
+    private async stopRecognition() {
+        if (!this.recognitionActive) {
+            console.log('Recognition not active, skipping stop');
+            return;
+        }
+
+        try {
+            await this.recognition.stop();
+            this.recognitionActive = false;
+            console.log('Stopped speech recognition');
+        } catch (error) {
+            console.error('Failed to stop recognition:', error);
+            this.recognitionActive = false;
+            throw error;
+        }
     }
 
     start() {
@@ -259,28 +310,24 @@ export class WakeWordListener {
             if (!this.recognition) {
                 throw new Error('Speech recognition not initialized');
             }
-            if (this.isListening) {
-                console.log('Already listening, ignoring start request');
-                return;
-            }
-            this.setListening(true, 'start() called');
-            this.isPaused = false;
-            
-            // Clear any existing restart timeout
-            if (this.restartTimeout !== null) {
-                window.clearTimeout(this.restartTimeout);
-                this.restartTimeout = null;
-            }
 
-            this.recognition.start();
-            console.log('Started speech recognition');
+            // Request microphone permissions
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                    .then(() => {
+                        this.stateMachine.enable(true);
+                        this.startRecognition();
+                    })
+                    .catch((err) => {
+                        console.error('Failed to get microphone permission:', err);
+                        this.stateMachine.permissionDenied();
+                    });
+            } else {
+                throw new Error('Media devices not supported');
+            }
         } catch (error) {
             console.error('Error starting speech recognition:', error);
             this.onError(error instanceof Error ? error : new Error('Failed to start speech recognition'));
-            // Try to restart if we hit an error
-            if (this.isListening && !this.isPaused) {
-                this.restartRecognition();
-            }
         }
     }
 
@@ -290,13 +337,8 @@ export class WakeWordListener {
             if (!this.recognition) {
                 throw new Error('Speech recognition not initialized');
             }
-            if (!this.isListening) {
-                console.log('Already stopped, ignoring stop request');
-                return;
-            }
-            this.setListening(false, 'stop() called');
-            this.isPaused = false;
-            this.isAwake = false;
+            
+            this.stateMachine.disable();
             
             // Clear any pending restart
             if (this.restartTimeout !== null) {
@@ -304,14 +346,35 @@ export class WakeWordListener {
                 this.restartTimeout = null;
             }
             
-            this.recognition.stop();
-            console.log('Stopped speech recognition');
+            this.stopRecognition();
         } catch (error) {
             console.error('Error stopping speech recognition:', error);
             this.onError(error instanceof Error ? error : new Error('Failed to stop speech recognition'));
         }
     }
 
+    get listening(): boolean {
+        return !this.stateMachine.isDisabled();
+    }
+
+    // Debug methods
+    debugSetWakeState(isAwake: boolean) {
+        console.log('Debug: Manually setting wake state:', isAwake);
+        if (isAwake) {
+            this.stateMachine.wake();
+        } else {
+            this.stateMachine.sleep();
+        }
+    }
+
+    debugSimulateUtterance(text: string) {
+        console.log('Debug: Simulating utterance:', text);
+        if (this.onUtterance) {
+            this.onUtterance({ text });
+        }
+    }
+
+    // Update wake/sleep words
     updateWakeWord(word: string) {
         console.log('Updating wake word:', word);
         this.wakeWord = word.toLowerCase();
@@ -320,32 +383,5 @@ export class WakeWordListener {
     updateSleepWord(word: string) {
         console.log('Updating sleep word:', word);
         this.sleepWord = word.toLowerCase();
-    }
-
-    private setListening(value: boolean, reason: string) {
-        const oldValue = this.isListening;
-        this.isListening = value;
-        console.log(`isListening ${oldValue} -> ${value} (${reason})`);
-    }
-
-    get listening() {
-        return this.isListening;
-    }
-
-    // Debug methods
-    debugSetWakeState(isAwake: boolean) {
-        console.log('Debug: Manually setting wake state:', isAwake);
-        this.isAwake = isAwake;
-        if (isAwake) {
-            this.awakeningId++;
-        }
-        this.onStateChange({ isAwake, awakeningId: this.awakeningId });
-    }
-
-    debugSimulateUtterance(text: string) {
-        console.log('Debug: Simulating utterance:', text);
-        if (this.onUtterance) {
-            this.onUtterance({ text });
-        }
     }
 } 
