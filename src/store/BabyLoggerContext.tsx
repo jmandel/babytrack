@@ -2,6 +2,13 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { NewbornEvent } from '@/types/newbornTracker';
 import { useVoiceRecognition } from '@/hooks/useVoiceRecognition';
 
+interface SavedVisualization {
+  id: string;
+  name: string;
+  code: string;
+  createdAt: string;
+}
+
 interface BabyLoggerState {
   events: NewbornEvent[];
   wakeWord: string;
@@ -15,6 +22,7 @@ interface BabyLoggerState {
   error: string;
   micPermissionDenied: boolean;
   utterances: Array<{ text: string; timestamp: string }>;
+  savedVisualizations: SavedVisualization[];
   addEvent: (event: NewbornEvent) => void;
   deleteEvent: (eventId: string) => void;
   clearEvents: () => void;
@@ -23,6 +31,8 @@ interface BabyLoggerState {
   setSleepWord: (word: string) => void;
   setApiKey: (key: string) => void;
   setIsListening: (isListening: boolean) => void;
+  saveVisualization: (name: string, code: string) => void;
+  deleteVisualization: (id: string) => void;
   // Debug methods
   debugSetWakeState: (isAwake: boolean) => void;
   debugSimulateUtterance: (text: string) => void;
@@ -33,6 +43,11 @@ const BabyLoggerContext = createContext<BabyLoggerState | null>(null);
 export function BabyLoggerProvider({ children }: { children: React.ReactNode }) {
   const [events, setEvents] = useState<NewbornEvent[]>(() => {
     const stored = localStorage.getItem('eventStore');
+    return stored ? JSON.parse(stored) : [];
+  });
+
+  const [savedVisualizations, setSavedVisualizations] = useState<SavedVisualization[]>(() => {
+    const stored = localStorage.getItem('visualizationLibrary');
     return stored ? JSON.parse(stored) : [];
   });
 
@@ -77,6 +92,22 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
     setEvents([]);
   };
 
+  const saveVisualization = useCallback((name: string, code: string) => {
+    setSavedVisualizations(prev => {
+      const newViz: SavedVisualization = {
+        id: crypto.randomUUID(),
+        name,
+        code,
+        createdAt: new Date().toISOString()
+      };
+      return [...prev, newViz];
+    });
+  }, []);
+
+  const deleteVisualization = useCallback((id: string) => {
+    setSavedVisualizations(prev => prev.filter(viz => viz.id !== id));
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('eventStore', JSON.stringify(events));
   }, [events]);
@@ -92,6 +123,10 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     localStorage.setItem('openaiApiKey', apiKey);
   }, [apiKey]);
+
+  useEffect(() => {
+    localStorage.setItem('visualizationLibrary', JSON.stringify(savedVisualizations));
+  }, [savedVisualizations]);
 
   const {
     isListening,
@@ -119,6 +154,7 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
     error,
     micPermissionDenied,
     utterances,
+    savedVisualizations,
     addEvent,
     deleteEvent,
     clearEvents,
@@ -127,6 +163,8 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
     setSleepWord,
     setApiKey,
     setIsListening: setManualListening,
+    saveVisualization,
+    deleteVisualization,
     debugSetWakeState: useCallback((isAwake: boolean) => {
       listenerRef.current?.debugSetWakeState(isAwake);
     }, [listenerRef]),

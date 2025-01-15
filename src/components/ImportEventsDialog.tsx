@@ -7,8 +7,10 @@ import {
   FeedingType,
   BottleContent,
   BottleContentType,
-  BreastSide
+  BreastSide,
+  MedicalEventType
 } from '@/types/newbornTracker';
+import { toLocalIso8601 } from '@/lib/dateUtils';
 
 // Helper to generate a stable hash from event content
 function generateEventHash(event: Omit<NewbornEvent, 'id'>): string {
@@ -22,100 +24,332 @@ function generateEventHash(event: Omit<NewbornEvent, 'id'>): string {
   return `synthetic_${Math.abs(hash).toString(16)}`;
 }
 
-function parseHuckleberryCSV(csvContent: string): NewbornEvent[] {
-  const lines = csvContent.split('\n');
-  if (lines.length < 2) throw new Error('CSV file is empty or invalid');
-  
-  const headers = lines[0].toLowerCase().split(',');
-  const events: NewbornEvent[] = [];
+/**
+ * Parse "hh:mm" => total minutes (integer).
+ */
+function parseDurationToMinutes(durationStr: string): number | undefined {
+  if (!durationStr) return undefined;
+  const [hh, mm] = durationStr.split(":").map((s) => parseInt(s, 10));
+  return hh * 60 + mm;
+}
 
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    
-    const values = line.split(',');
-    const row = Object.fromEntries(headers.map((h, idx) => [h, values[idx]]));
+function parseBottleContentType(str: string): BottleContentType {
+  if (!str) return BottleContentType.Formula;
+  const lower = str.trim().toLowerCase();
+  if (lower.includes("formula")) return BottleContentType.Formula;
+  if (lower.includes("breast")) return BottleContentType.BreastMilk;
+  if (lower.includes("water")) return BottleContentType.Water;
+  if (lower.includes("fortifier")) return BottleContentType.Fortifier;
+  return BottleContentType.Formula;
+}
 
-    try {
-      const startTime = new Date(row.start);
-      const endTime = row.end ? new Date(row.end) : undefined;
-      
-      let event: Partial<NewbornEvent> | null = null;
+function parseVolumeMl(str: string): number {
+  if (!str) return 0;
+  const match = str.trim().match(/(\d+)/);
+  if (match) {
+    return parseInt(match[1], 10);
+  }
+  return 0;
+}
 
-      switch (row.activity.toLowerCase()) {
-        case 'feed':
-          if (row.type?.toLowerCase()?.includes('bottle')) {
-            event = {
-              eventType: EventType.Feeding,
-              occurredAt: startTime.toISOString(),
-              endedAt: endTime?.toISOString(),
-              subType: FeedingType.Bottle,
-              details: {
-                contents: [{
-                  type: BottleContentType.Formula,
-                  amountMl: row.amount ? parseFloat(row.amount) : 0
-                }],
-                amountMlOffered: row.amount ? parseFloat(row.amount) : 0,
-                amountMlConsumed: row.amount ? parseFloat(row.amount) : 0
-              }
-            };
-          } else {
-            const durationMinutes = endTime 
-              ? Math.round((endTime.getTime() - startTime.getTime()) / (1000 * 60))
-              : 0;
-            
-            event = {
-              eventType: EventType.Feeding,
-              occurredAt: startTime.toISOString(),
-              endedAt: endTime?.toISOString(),
-              subType: FeedingType.Nursing,
-              details: {
-                attempts: [{
-                  side: row.side?.toUpperCase() === 'LEFT' ? BreastSide.Left : BreastSide.Right,
-                  durationMinutes
-                }]
-              }
-            };
-          }
-          break;
+function parseNursingAttempt(condStr: string): { side: BreastSide, durationMinutes: number } | undefined {
+  const match = condStr.trim().match(/(\d+):(\d+)([RL])?/i);
+  if (!match) {
+    return undefined;
+  }
+  const hh = parseInt(match[1], 10);
+  const mm = parseInt(match[2], 10);
+  let sideChar = match[3] || "R";
+  sideChar = sideChar.toUpperCase();
 
-        case 'diaper':
-          event = {
-            eventType: EventType.Diaper,
-            occurredAt: startTime.toISOString(),
-            details: {
-              urine: row.type?.toLowerCase()?.includes('wet') ? { volume: 'medium' } : undefined,
-              stool: row.type?.toLowerCase()?.includes('dirty') ? { 
-                volume: 'medium',
-                color: 'brown'
-              } : undefined,
-            }
-          };
-          break;
+  let side = BreastSide.Right;
+  if (sideChar === "L") side = BreastSide.Left;
 
-        case 'sleep':
-          event = {
-            eventType: EventType.Sleep,
-            occurredAt: startTime.toISOString(),
-            endedAt: endTime?.toISOString(),
-            details: {}
-          };
-          break;
-      }
+  const durationMinutes = hh * 60 + mm;
+  return { side, durationMinutes };
+}
 
-      if (event) {
-        const eventWithoutId = event as Omit<NewbornEvent, 'id'>;
-        events.push({
-          ...eventWithoutId,
-          id: generateEventHash(eventWithoutId)
-        } as NewbornEvent);
-      }
-    } catch (err) {
-      console.warn('Failed to parse row:', row, err);
+/**
+ * Parse a "Feed" row to either a BOTTLE or NURSING event.
+ */
+function parseFeedingRow(row: string[]): NewbornEvent {
+  const occurredAt = toLocalIso8601(row[1]);
+  const endedAt = toLocalIso8601(row[2]);
+  const notes = row[7]?.trim() || undefined;
+
+  if (row[5]?.toLowerCase() === "bottle") {
+    // Bottle feed
+    const contentType = parseBottleContentType(row[4]);
+    const volumeMl = parseVolumeMl(row[6]);
+    const details = {
+      contents: [
+        {
+          type: contentType,
+          amountMl: volumeMl || 0,
+        },
+      ],
+      amountMlOffered: volumeMl || 0,
+      amountMlConsumed: volumeMl || 0,
+    };
+    return {
+      eventType: EventType.Feeding,
+      subType: FeedingType.Bottle,
+      occurredAt,
+      endedAt,
+      notes,
+      details,
+    } as NewbornEvent;
+  } 
+  else if (row[5]?.toLowerCase() === "breast") {
+    // Nursing feed
+    const attempts = [];
+    if (row[4]) {
+      const att = parseNursingAttempt(row[4]);
+      if (att) attempts.push(att);
     }
+    if (row[6]) {
+      const att2 = parseNursingAttempt(row[6]);
+      if (att2) attempts.push(att2);
+    }
+    const details = { attempts };
+    return {
+      eventType: EventType.Feeding,
+      subType: FeedingType.Nursing,
+      occurredAt,
+      endedAt,
+      notes,
+      details,
+    } as NewbornEvent;
   }
 
-  return events;
+  // Fallback to bottle if we can't detect breast vs. bottle
+  return {
+    eventType: EventType.Feeding,
+    subType: FeedingType.Bottle,
+    occurredAt,
+    endedAt,
+    notes,
+    details: {
+      contents: [],
+      amountMlOffered: 0,
+    },
+  } as NewbornEvent;
+}
+
+/**
+ * Parse "Pump" row
+ */
+function parsePumpRow(row: string[]): NewbornEvent {
+  const occurredAt = toLocalIso8601(row[1]);
+  const endedAt = toLocalIso8601(row[2]);
+  const notes = row[7]?.trim() || undefined;
+  const duration = parseDurationToMinutes(row[3]);
+  const volume = parseVolumeMl(row[4]);
+
+  return {
+    eventType: EventType.Pumping,
+    occurredAt,
+    endedAt,
+    notes,
+    details: {
+      side: "BOTH",
+      durationMinutes: duration || 0,
+      amountMl: volume || 0,
+      letdown: false,
+      method: "ELECTRIC",
+    },
+  } as NewbornEvent;
+}
+
+interface StoolDetails {
+  volume: 'small' | 'medium' | 'large';
+  color?: 'brown' | 'black' | 'yellow' | 'green' | 'red' | 'other';
+}
+
+interface UrineDetails {
+  volume: 'small' | 'medium' | 'large';
+}
+
+/**
+ * Parse "Diaper" row
+ */
+function parseDiaperRow(row: string[]): NewbornEvent {
+  const occurredAt = toLocalIso8601(row[1]);
+  const notes = row[7]?.trim() || undefined;
+  // Combine columns 4..7
+  const allDiaperText = [row[4], row[5], row[6], row[7]]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  let urine: UrineDetails | undefined;
+  let stool: StoolDetails | undefined;
+
+  if (allDiaperText.includes("pee") || allDiaperText.includes("urine")) {
+    urine = { volume: "medium" };
+    if (allDiaperText.includes("large")) urine.volume = "large";
+    else if (allDiaperText.includes("small")) urine.volume = "small";
+  }
+  if (allDiaperText.includes("poo") || allDiaperText.includes("stool") || allDiaperText.includes("poop")) {
+    stool = { volume: "medium" };
+    if (allDiaperText.includes("large")) stool.volume = "large";
+    else if (allDiaperText.includes("small")) stool.volume = "small";
+
+    if (allDiaperText.includes("brown")) stool.color = "brown";
+    else if (allDiaperText.includes("black")) stool.color = "black";
+    else if (allDiaperText.includes("yellow")) stool.color = "yellow";
+    else if (allDiaperText.includes("green")) stool.color = "green";
+    else if (allDiaperText.includes("red")) stool.color = "red";
+  }
+
+  // If "both" is found but not assigned above
+  if (allDiaperText.includes("both")) {
+    if (!urine) urine = { volume: "medium" };
+    if (!stool) stool = { volume: "medium", color: "other" };
+  }
+
+  return {
+    eventType: EventType.Diaper,
+    occurredAt,
+    notes,
+    details: {
+      urine,
+      stool,
+    },
+  } as NewbornEvent;
+}
+
+/**
+ * Parse "Meds" row => Medical event (subType=MEDICATION).
+ */
+function parseMedicationRow(row: string[]): NewbornEvent {
+  const occurredAt = toLocalIso8601(row[1]);
+  const notes = row[7]?.trim() || undefined;
+  const medicationName = row[5]?.trim() || "Unspecified medication";
+
+  return {
+    eventType: EventType.Medical,
+    subType: MedicalEventType.Medication,
+    occurredAt,
+    notes,
+    details: {
+      medication: medicationName,
+      dosageAmount: 1,
+      dosageUnit: "units",
+      route: "oral",
+    },
+  } as NewbornEvent;
+}
+
+/**
+ * Parse "Tummy time" => treat as AWAKE event
+ */
+function parseTummyTimeRow(row: string[]): NewbornEvent {
+  const occurredAt = toLocalIso8601(row[1]);
+  const endedAt = toLocalIso8601(row[2]);
+  const notes = row[7]?.trim() || undefined;
+
+  return {
+    eventType: EventType.Awake,
+    occurredAt,
+    endedAt,
+    notes,
+    details: {
+      activity: "Tummy time",
+    },
+  } as NewbornEvent;
+}
+
+function parseUnknownRow(row: string[]): NewbornEvent {
+  const occurredAt = toLocalIso8601(row[1]);
+  const endedAt = toLocalIso8601(row[2]);
+  const notes = row[7]?.trim() || undefined;
+  return {
+    eventType: EventType.Awake,
+    occurredAt,
+    endedAt,
+    notes,
+    details: {
+      activity: row[0] || "Unknown activity"
+    },
+  } as NewbornEvent;
+}
+
+function parseCsvRowToEvent(row: string[]): NewbornEvent {
+  const typeStr = row[0]?.trim().toLowerCase();
+  let event: NewbornEvent;
+  switch (typeStr) {
+    case "feed":
+      event = parseFeedingRow(row);
+      break;
+    case "diaper":
+      event = parseDiaperRow(row);
+      break;
+    case "pump":
+      event = parsePumpRow(row);
+      break;
+    case "meds":
+      event = parseMedicationRow(row);
+      break;
+    case "tummy time":
+      event = parseTummyTimeRow(row);
+      break;
+    default:
+      event = parseUnknownRow(row);
+  }
+  return {
+    ...event,
+    id: generateEventHash(event)
+  };
+}
+
+/**
+ * Parse CSV content, handling:
+ * 1. Line splits with \r\n or \n
+ * 2. Quoted fields with commas
+ * 3. Header row detection
+ */
+function parseCsv(text: string): string[][] {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+
+  // If the first line looks like a header, remove it:
+  const firstLineLower = lines[0]?.toLowerCase() || "";
+  if (
+    firstLineLower.includes("type") &&
+    firstLineLower.includes("start") &&
+    firstLineLower.includes("end") &&
+    firstLineLower.includes("duration")
+  ) {
+    // This is likely the header row => remove it
+    lines.shift();
+  }
+
+  return lines.map((line) => {
+    let current = "";
+    let inQuotes = false;
+    const fields = [];
+
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        inQuotes = !inQuotes;
+      } else if (c === "," && !inQuotes) {
+        fields.push(current);
+        current = "";
+      } else {
+        current += c;
+      }
+    }
+    fields.push(current);
+
+    // Remove leading/trailing quotes
+    return fields.map((f) => f.replace(/^"|"$/g, ""));
+  });
+}
+
+function parseHuckleberryCSV(csvContent: string): NewbornEvent[] {
+  const rows = parseCsv(csvContent);
+  return rows.map(parseCsvRowToEvent);
 }
 
 export function ImportEventsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {

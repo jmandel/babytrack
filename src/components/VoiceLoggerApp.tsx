@@ -9,6 +9,7 @@ import SettingsIcon from '@mui/icons-material/Settings';
 import { ImportEventsDialog } from './ImportEventsDialog';
 import { EventCard } from '@/components/events/EventCard';
 import { MultiStepAnalysis } from '@/components/analysis/MultiStepAnalysis';
+import { BreastVolumeDisplay } from './BreastVolumeDisplay';
 
 export function VoiceLoggerApp() {
   const {
@@ -37,7 +38,7 @@ export function VoiceLoggerApp() {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-    return (
+  return (
     <Container maxWidth="md" sx={{ py: 2 }}>
       {/* Header */}
       <Paper elevation={1} sx={{ mb: 2, borderRadius: 1 }}>
@@ -50,6 +51,7 @@ export function VoiceLoggerApp() {
           <Typography variant="h6" sx={{ fontWeight: 500, flexGrow: 1, m: 0 }}>
             Baby Logger
           </Typography>
+          <BreastVolumeDisplay events={events} />
           <Box sx={{ display: 'flex', gap: 0.5 }}>
             <div className="flex items-center gap-1">
                     <button
@@ -224,7 +226,7 @@ export function VoiceLoggerApp() {
                     />
                 ))}
           <Box sx={{ mt: 2 }}>
-            <MultiStepAnalysis events={events} apiKey={apiKey} />
+            <MultiStepAnalysis events={events} apiKey={apiKey} model="gpt-4o" />
           </Box>
         </>
       )}
