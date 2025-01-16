@@ -1,3 +1,5 @@
+export {};
+
 /**
  * @schema NewbornEvent
  * 

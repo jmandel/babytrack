@@ -267,11 +267,11 @@ export class StructuredVoiceLogger {
     }
 
     start() {
-        this.listener.start();
+        this.listener.setListening(true);
     }
 
     stop() {
-        this.listener.stop();
+        this.listener.setListening(false);
     }
 
     get isListening() {
