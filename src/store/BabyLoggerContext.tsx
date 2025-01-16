@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NewbornEvent } from '@/types/newbornTracker';
 import { useVoiceRecognition } from '@/hooks/useVoiceRecognition';
 import { Snackbar } from '@mui/material';
@@ -45,6 +45,55 @@ interface BabyLoggerState {
 const BabyLoggerContext = createContext<BabyLoggerState | null>(null);
 
 export function BabyLoggerProvider({ children }: { children: React.ReactNode }) {
+  // Use refs for stable references
+  const stableRefs = useRef({
+    addEvent: (event: NewbornEvent) => {
+      console.log('Adding/updating event:', event.id);
+      setEvents(prev => {
+        let newEvents;
+        
+        // If event has an ID and already exists, update it
+        if (event.id && prev.some(e => e.id === event.id)) {
+          console.log('Updating existing event:', event.id);
+          newEvents = prev.map(e => e.id === event.id ? { ...event } : e);
+        } else {
+          // If it's a new event, ensure it has a unique ID
+          const newEvent = {
+            ...event,
+            id: event.id || crypto.randomUUID()
+          };
+          console.log('Adding new event:', newEvent.id);
+          newEvents = [...prev, newEvent];
+        }
+        
+        // Sort events by occurredAt timestamp, most recent first
+        return newEvents.sort((a, b) => 
+          new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()
+        );
+      });
+    },
+    deleteEvent: (eventId: string) => {
+      setEvents(prev => prev.filter(event => event.id !== eventId));
+    },
+    clearEvents: () => {
+      setEvents([]);
+    },
+    saveVisualization: (name: string, code: string) => {
+      setSavedVisualizations(prev => {
+        const newViz: SavedVisualization = {
+          id: crypto.randomUUID(),
+          name,
+          code,
+          createdAt: new Date().toISOString()
+        };
+        return [...prev, newViz];
+      });
+    },
+    deleteVisualization: (id: string) => {
+      setSavedVisualizations(prev => prev.filter(viz => viz.id !== id));
+    }
+  });
+
   const [events, setEvents] = useState<NewbornEvent[]>(() => {
     const stored = localStorage.getItem('eventStore');
     return stored ? JSON.parse(stored) : [];
@@ -69,56 +118,7 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
 
   const [manualListening, setManualListening] = useState(false);
 
-  const addEvent = useCallback((event: NewbornEvent) => {
-    console.log('Adding/updating event:', event.id);
-    setEvents(prev => {
-      let newEvents;
-      
-      // If event has an ID and already exists, update it
-      if (event.id && prev.some(e => e.id === event.id)) {
-        console.log('Updating existing event:', event.id);
-        newEvents = prev.map(e => e.id === event.id ? { ...event } : e);
-      } else {
-        // If it's a new event, ensure it has a unique ID
-        const newEvent = {
-          ...event,
-          id: event.id || crypto.randomUUID()
-        };
-        console.log('Adding new event:', newEvent.id);
-        newEvents = [...prev, newEvent];
-      }
-      
-      // Sort events by occurredAt timestamp, most recent first
-      return newEvents.sort((a, b) => 
-        new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()
-      );
-    });
-  }, []);
-
-  const deleteEvent = (eventId: string) => {
-    setEvents(prev => prev.filter(event => event.id !== eventId));
-  };
-
-  const clearEvents = () => {
-    setEvents([]);
-  };
-
-  const saveVisualization = useCallback((name: string, code: string) => {
-    setSavedVisualizations(prev => {
-      const newViz: SavedVisualization = {
-        id: crypto.randomUUID(),
-        name,
-        code,
-        createdAt: new Date().toISOString()
-      };
-      return [...prev, newViz];
-    });
-  }, []);
-
-  const deleteVisualization = useCallback((id: string) => {
-    setSavedVisualizations(prev => prev.filter(viz => viz.id !== id));
-  }, []);
-
+  // Persist state changes to localStorage
   useEffect(() => {
     localStorage.setItem('eventStore', JSON.stringify(events));
   }, [events]);
@@ -155,12 +155,13 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
     wakeWord,
     sleepWord,
     events,
-    onNewEvent: addEvent,
+    onNewEvent: stableRefs.current.addEvent,
     isListening: manualListening,
     setIsListening: setManualListening,
   });
 
-  const value: BabyLoggerState = {
+  // Memoize the context value to prevent unnecessary re-renders
+  const value = useMemo<BabyLoggerState>(() => ({
     events,
     wakeWord,
     sleepWord,
@@ -171,26 +172,42 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
     micPermissionDenied,
     utterances,
     savedVisualizations,
-    addEvent,
-    deleteEvent,
-    clearEvents,
+    addEvent: stableRefs.current.addEvent,
+    deleteEvent: stableRefs.current.deleteEvent,
+    clearEvents: stableRefs.current.clearEvents,
     clearUtterances,
     setWakeWord,
     setSleepWord,
     setApiKey,
     setIsListening: setManualListening,
-    saveVisualization,
-    deleteVisualization,
-    debugSetWakeState: useCallback((isAwake: boolean) => {
+    saveVisualization: stableRefs.current.saveVisualization,
+    deleteVisualization: stableRefs.current.deleteVisualization,
+    debugSetWakeState: (isAwake: boolean) => {
       listenerRef.current?.debugSetWakeState(isAwake);
-    }, [listenerRef]),
-    debugSimulateUtterance: useCallback((text: string) => {
+    },
+    debugSimulateUtterance: (text: string) => {
       listenerRef.current?.debugSimulateUtterance(text);
-    }, [listenerRef]),
+    },
     toastOpen,
     setToastOpen,
     currentUtterance,
-  };
+  }), [
+    events,
+    wakeWord,
+    sleepWord,
+    apiKey,
+    manualListening,
+    voiceStatus,
+    error,
+    micPermissionDenied,
+    utterances,
+    savedVisualizations,
+    clearUtterances,
+    listenerRef,
+    toastOpen,
+    setToastOpen,
+    currentUtterance,
+  ]);
 
   return (
     <BabyLoggerContext.Provider value={value}>

@@ -59,6 +59,7 @@ export function useVoiceRecognition({
   const utterancesRef = useRef(utterances);
   const listenerRef = useRef<WakeWordListener | null>(null);
   const loggerRef = useRef<StructuredVoiceLogger | null>(null);
+  const configRef = useRef({ apiKey, wakeWord, sleepWord });
 
   // Keep refs up to date
   useEffect(() => {
@@ -68,6 +69,10 @@ export function useVoiceRecognition({
   useEffect(() => {
     utterancesRef.current = utterances;
   }, [utterances]);
+
+  useEffect(() => {
+    configRef.current = { apiKey, wakeWord, sleepWord };
+  }, [apiKey, wakeWord, sleepWord]);
 
   // Functions that read from refs
   const getRecentEventsFromRef = useCallback((n: number) => {
@@ -84,6 +89,14 @@ export function useVoiceRecognition({
   // Initialize WakeWordListener once and only once
   useEffect(() => {
     if (!apiKey) return;
+
+    // Only create the listener if we don't have one
+    if (listenerRef.current) {
+      console.log('WakeWordListener already exists, updating config');
+      listenerRef.current.updateWakeWord(wakeWord);
+      listenerRef.current.updateSleepWord(sleepWord);
+      return;
+    }
 
     console.log('Creating WakeWordListener instance');
     const listener = new WakeWordListener({
@@ -128,7 +141,7 @@ export function useVoiceRecognition({
 
     listenerRef.current = listener;
 
-    // Clean up on unmount
+    // Clean up on unmount only
     return () => {
       console.log('Cleaning up WakeWordListener');
       if (listenerRef.current) {
@@ -136,18 +149,16 @@ export function useVoiceRecognition({
         listenerRef.current = null;
       }
     };
-  }, [apiKey, wakeWord, sleepWord, isListening, setIsListening]);
+  }, [apiKey]); // Only recreate when API key changes
 
   // Initialize/update StructuredVoiceLogger when config changes
   useEffect(() => {
     if (!apiKey || !listenerRef.current) return;
 
-    console.log('Initializing/updating StructuredVoiceLogger');
-    
-    // Always create a new logger with fresh events
+    // Only create a new logger if we don't have one
     if (loggerRef.current) {
-      console.log('Cleaning up previous logger');
-      loggerRef.current.stop();
+      console.log('StructuredVoiceLogger already exists');
+      return;
     }
 
     console.log('Creating new StructuredVoiceLogger');
@@ -170,7 +181,7 @@ export function useVoiceRecognition({
         } as NewbornEvent;
 
         if (data.id) {
-          const existingEvent = events.find(e => e.id === data.id);
+          const existingEvent = eventsRef.current.find(e => e.id === data.id);
           if (existingEvent) {
             console.log('=== Updating existing event ===');
             console.log('Original:', JSON.stringify(existingEvent, null, 2));
@@ -214,28 +225,49 @@ export function useVoiceRecognition({
 
     loggerRef.current = logger;
 
+    // Clean up on unmount only
     return () => {
       if (loggerRef.current) {
         console.log('Cleaning up StructuredVoiceLogger');
         loggerRef.current.stop();
+        loggerRef.current = null;
       }
     };
-  }, [apiKey, wakeWord, sleepWord]); // Remove events and utterances from deps
+  }, [apiKey]); // Only recreate when API key changes
 
-  // Handle listening state changes
+  // Handle listening state changes with debounce
   useEffect(() => {
     const listener = listenerRef.current;
     if (!listener) return;
 
-    console.log('Updating listening state:', isListening);
-    listener.setListening(isListening).catch(error => {
-      console.error('Error updating listening state:', error);
-      setError(error instanceof Error ? error.message : String(error));
-      if (error.message?.includes('Permission denied') || error.message?.includes('not allowed')) {
-        setMicPermissionDenied(true);
-        setIsListening(false);
+    let timeoutId: number | null = null;
+    
+    const updateListening = () => {
+      console.log('Updating listening state:', isListening);
+      listener.setListening(isListening).catch(error => {
+        console.error('Error updating listening state:', error);
+        setError(error instanceof Error ? error.message : String(error));
+        if (error.message?.includes('Permission denied') || error.message?.includes('not allowed')) {
+          setMicPermissionDenied(true);
+          setIsListening(false);
+        }
+      });
+    };
+
+    // Clear any existing timeout
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+
+    // Set a new timeout
+    timeoutId = window.setTimeout(updateListening, 300);
+
+    // Cleanup
+    return () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
       }
-    });
+    };
   }, [isListening]);
 
   // Persist utterances to localStorage

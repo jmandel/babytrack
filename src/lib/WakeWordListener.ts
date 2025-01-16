@@ -60,9 +60,20 @@ export class WakeWordListener {
     private recognitionActive: boolean = false;
     private mediaStream: MediaStream | null = null;
     private desiredListeningState: boolean = false;
+    private retryStats: { count: number; firstRetryTime: number } | null = null;
+    private lastSpeechTimestamp: number = 0;
+    private silenceTimeout: number | null = null;
+    private isAndroid: boolean = /Android/i.test(navigator.userAgent);
 
     constructor(config: WakeWordListenerConfig) {
-        console.log('Initializing WakeWordListener with config:', config);
+        console.log('Initializing WakeWordListener with config:', {
+            ...config,
+            platform: {
+                userAgent: navigator.userAgent,
+                isAndroid: this.isAndroid
+            }
+        });
+
         this.wakeWord = config.wakeWord.toLowerCase();
         this.sleepWord = config.sleepWord.toLowerCase();
         this.onStateChange = config.onStateChange;
@@ -97,20 +108,22 @@ export class WakeWordListener {
 
             // Configure recognition with mobile-optimized settings
             this.recognition.continuous = true;
-            this.recognition.interimResults = true;
-            this.recognition.maxAlternatives = 1; // Reduce processing overhead
+            // Disable interim results completely to improve stability
+            this.recognition.interimResults = false;
+            this.recognition.maxAlternatives = 1;
             this.recognition.lang = 'en-US';
             console.log('Configured recognition settings:', {
                 continuous: this.recognition.continuous,
                 interimResults: this.recognition.interimResults,
                 maxAlternatives: this.recognition.maxAlternatives,
-                lang: this.recognition.lang
+                lang: this.recognition.lang,
+                platform: this.isAndroid ? 'Android' : 'Other'
             });
 
-            // Set up event handlers
+            // Set up event handlers with detailed logging
             this.recognition.onstart = () => {
-                console.log('Recognition started');
-                this.onDebug?.({ event: 'start' });
+                console.log('[Recognition] Session started');
+                this.onDebug?.({ event: 'start', timestamp: new Date().toISOString() });
             };
 
             this.recognition.onresult = this.handleResult.bind(this);
@@ -118,32 +131,48 @@ export class WakeWordListener {
             this.recognition.onend = this.handleEnd.bind(this);
 
             this.recognition.onaudiostart = () => {
-                console.log('Audio started');
-                this.onDebug?.({ event: 'audiostart' });
-            };
-            this.recognition.onaudioend = () => {
-                console.log('Audio ended');
-                this.onDebug?.({ event: 'audioend' });
-            };
-            this.recognition.onsoundstart = () => {
-                console.log('Sound started');
-                this.onDebug?.({ event: 'soundstart' });
-            };
-            this.recognition.onsoundend = () => {
-                console.log('Sound ended');
-                this.onDebug?.({ event: 'soundend' });
-            };
-            this.recognition.onspeechstart = () => {
-                console.log('Speech started');
-                this.onDebug?.({ event: 'speechstart' });
-            };
-            this.recognition.onspeechend = () => {
-                console.log('Speech ended');
-                this.onDebug?.({ event: 'speechend' });
+                console.log('[Recognition] Audio capture started');
+                this.onDebug?.({ event: 'audiostart', timestamp: new Date().toISOString() });
             };
 
-            // Add visibility change handling
-            document.addEventListener('visibilitychange', this.handleVisibilityChange.bind(this));
+            this.recognition.onaudioend = () => {
+                console.log('[Recognition] Audio capture ended');
+                this.onDebug?.({ event: 'audioend', timestamp: new Date().toISOString() });
+            };
+
+            this.recognition.onsoundstart = () => {
+                console.log('[Recognition] Sound detected');
+                this.onDebug?.({ event: 'soundstart', timestamp: new Date().toISOString() });
+            };
+
+            this.recognition.onsoundend = () => {
+                console.log('[Recognition] Sound ended');
+                this.onDebug?.({ event: 'soundend', timestamp: new Date().toISOString() });
+                // Start silence timer
+                this.handleSilence();
+            };
+
+            this.recognition.onspeechstart = () => {
+                console.log('[Recognition] Speech started');
+                this.lastSpeechTimestamp = Date.now();
+                this.clearSilenceTimeout();
+                this.onDebug?.({ 
+                    event: 'speechstart', 
+                    timestamp: new Date().toISOString(),
+                    lastSpeechTimestamp: this.lastSpeechTimestamp
+                });
+            };
+
+            this.recognition.onspeechend = () => {
+                console.log('[Recognition] Speech ended');
+                this.onDebug?.({ 
+                    event: 'speechend', 
+                    timestamp: new Date().toISOString(),
+                    timeSinceLastSpeech: Date.now() - this.lastSpeechTimestamp
+                });
+                // Start silence timer
+                this.handleSilence();
+            };
 
         } catch (error) {
             console.error('Error initializing WakeWordListener:', error);
@@ -152,39 +181,70 @@ export class WakeWordListener {
         }
     }
 
+    private handleSilence() {
+        // Clear any existing silence timeout
+        this.clearSilenceTimeout();
+
+        // Set a new silence timeout
+        this.silenceTimeout = window.setTimeout(() => {
+            console.log('[Recognition] Silence threshold reached, restarting recognition');
+            this.onDebug?.({ 
+                event: 'silence_threshold_reached', 
+                timestamp: new Date().toISOString(),
+                timeSinceLastSpeech: Date.now() - this.lastSpeechTimestamp
+            });
+            
+            // Only restart if we're still supposed to be listening
+            if (this.desiredListeningState && !this.stateMachine.isDisabled()) {
+                this.restartRecognition();
+            }
+        }, 2000); // 2 second silence threshold
+    }
+
+    private clearSilenceTimeout() {
+        if (this.silenceTimeout !== null) {
+            window.clearTimeout(this.silenceTimeout);
+            this.silenceTimeout = null;
+        }
+    }
+
     private handleResult(event: SpeechRecognitionEvent) {
         const current = event.resultIndex;
         const transcript = event.results[current][0].transcript.toLowerCase().trim();
         const confidence = event.results[current][0].confidence;
-        const isFinal = event.results[current].isFinal;
 
-        console.log('Recognition result:', {
+        // Log all results for debugging
+        console.log('[Recognition] Result received:', {
             transcript,
             confidence,
-            isFinal,
-            isAwake: this.stateMachine.isAwake()
+            isAwake: this.stateMachine.isAwake(),
+            timeSinceLastSpeech: Date.now() - this.lastSpeechTimestamp,
+            platform: this.isAndroid ? 'Android' : 'Other'
         });
 
         this.onDebug?.({
             event: 'result',
             transcript,
             confidence,
-            isFinal,
-            isAwake: this.stateMachine.isAwake()
+            isAwake: this.stateMachine.isAwake(),
+            timestamp: new Date().toISOString(),
+            platform: this.isAndroid ? 'Android' : 'Other'
         });
 
-        if (!isFinal) return;
+        // Update last speech timestamp
+        this.lastSpeechTimestamp = Date.now();
+        this.clearSilenceTimeout();
 
         // Wake word detection - check if wake word is anywhere in the transcript
         if (!this.stateMachine.isAwake() && transcript.includes(this.wakeWord)) {
-            console.log('Wake word detected:', this.wakeWord);
+            console.log('[Recognition] Wake word detected:', this.wakeWord);
             this.stateMachine.wake();
             
             // Split transcript around wake word and process any content after it
             const parts = transcript.split(this.wakeWord);
             const afterWake = parts[parts.length - 1]?.trim();
             if (afterWake && !afterWake.includes(this.sleepWord)) {
-                console.log('Processing content after wake word:', afterWake);
+                console.log('[Recognition] Processing content after wake word:', afterWake);
                 this.onUtterance?.({ text: afterWake });
             }
             return;
@@ -192,13 +252,13 @@ export class WakeWordListener {
 
         // Sleep word detection - check if sleep word is anywhere in the transcript
         if (this.stateMachine.isAwake() && transcript.includes(this.sleepWord)) {
-            console.log('Sleep word detected:', this.sleepWord);
+            console.log('[Recognition] Sleep word detected:', this.sleepWord);
             
             // Split transcript around sleep word and process any content before it
             const parts = transcript.split(this.sleepWord);
             const beforeSleep = parts[0]?.trim();
             if (beforeSleep && !beforeSleep.includes(this.wakeWord)) {
-                console.log('Processing content before sleep word:', beforeSleep);
+                console.log('[Recognition] Processing content before sleep word:', beforeSleep);
                 this.onUtterance?.({ text: beforeSleep });
             }
             
@@ -208,25 +268,50 @@ export class WakeWordListener {
 
         // Normal utterance when awake
         if (this.stateMachine.isAwake()) {
-            console.log('Processing normal utterance:', transcript);
+            console.log('[Recognition] Processing normal utterance:', transcript);
             this.onUtterance?.({ text: transcript });
         } else if (transcript === this.wakeWord) {
             // Handle exact wake word match
-            console.log('Exact wake word match detected');
+            console.log('[Recognition] Exact wake word match detected');
             this.stateMachine.wake();
         } else if (transcript === this.sleepWord) {
             // Handle exact sleep word match
-            console.log('Exact sleep word match detected');
+            console.log('[Recognition] Exact sleep word match detected');
             this.stateMachine.sleep();
         }
     }
 
     private handleError(event: SpeechRecognitionErrorEvent) {
-        console.error('Speech recognition error:', event.error);
+        console.error('[Recognition] Error:', {
+            error: event.error,
+            timestamp: new Date().toISOString(),
+            state: this.stateMachine.getState(),
+            isActive: this.recognitionActive,
+            desiredState: this.desiredListeningState,
+            timeSinceLastSpeech: Date.now() - this.lastSpeechTimestamp
+        });
+        
+        this.onDebug?.({
+            event: 'error',
+            error: event.error,
+            timestamp: new Date().toISOString(),
+            state: this.stateMachine.getState(),
+            isActive: this.recognitionActive,
+            desiredState: this.desiredListeningState
+        });
         
         if (event.error === 'not-allowed' || event.error === 'permission-denied') {
             this.stateMachine.permissionDenied();
             this.setRecognitionActive(false);
+            return;
+        }
+
+        // Don't report no-speech errors, just restart
+        if (event.error === 'no-speech') {
+            console.log('[Recognition] No speech detected, will restart if needed');
+            if (!this.stateMachine.isDisabled() && this.desiredListeningState) {
+                this.restartRecognition();
+            }
             return;
         }
 
@@ -235,7 +320,7 @@ export class WakeWordListener {
         // If we get an error while listening and we're not disabled and still want to listen,
         // try to restart
         if (!this.stateMachine.isDisabled() && this.desiredListeningState) {
-            console.log('Attempting to restart after error');
+            console.log('[Recognition] Attempting to restart after error');
             this.restartRecognition();
         }
     }
@@ -255,11 +340,35 @@ export class WakeWordListener {
     }
 
     private restartRecognition() {
-        // Use a timeout to prevent rapid restarts
+        // Use a longer timeout to prevent rapid restarts
         if (this.restartTimeout !== null) {
             window.clearTimeout(this.restartTimeout);
             this.restartTimeout = null;
         }
+
+        // Track retry attempts
+        const now = Date.now();
+        if (!this.retryStats) {
+            this.retryStats = {
+                count: 0,
+                firstRetryTime: now
+            };
+        } else if (now - this.retryStats.firstRetryTime > 5000) {
+            // Reset stats if more than 5 seconds have passed
+            this.retryStats = {
+                count: 0,
+                firstRetryTime: now
+            };
+        }
+
+        // If we've retried too many times in a short period, stop
+        if (this.retryStats.count >= 3) {
+            console.log('Too many restart attempts in a short period, stopping auto-restart');
+            this.onError?.(new Error('Speech recognition unstable. Please try again in a few seconds.'));
+            return;
+        }
+
+        this.retryStats.count++;
 
         this.restartTimeout = window.setTimeout(() => {
             // Don't restart if we're disabled or already active
@@ -282,9 +391,9 @@ export class WakeWordListener {
                     if (!this.stateMachine.isDisabled() && !this.recognitionActive) {
                         this.restartRecognition();
                     }
-                }, 1000);
+                }, 2000); // Longer delay for error recovery
             }
-        }, 100);
+        }, 1000); // Standard delay between restarts
     }
 
     private async requestPermissions(): Promise<MediaStream> {
