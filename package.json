@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"tsx scripts/watchSchema.ts\" \"vite\"",
-    "generate-schema": "tsx scripts/generateSchema.ts",
-    "build": "npm run generate-schema && tsc && vite build",
-    "preview": "vite preview"
+    "dev": "bun run build-wakeword && vite",
+    "build": "bun run generate-schema && tsc && bun run build-wakeword && vite build",
+    "build-wakeword": "tsx scripts/buildWakeWord.ts",
+    "preview": "vite preview",
+    "generate-schema": "tsx scripts/generateSchema.ts"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -35,6 +36,7 @@
     "autoprefixer": "^10.4.20",
     "chart.js": "^4.4.7",
     "concurrently": "^9.1.2",
+    "esbuild": "^0.24.2",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.7.1",
