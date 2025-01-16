@@ -57,6 +57,8 @@ export function useVoiceRecognition({
   // Refs for latest state
   const eventsRef = useRef<NewbornEvent[]>(events);
   const utterancesRef = useRef(utterances);
+  const listenerRef = useRef<WakeWordListener | null>(null);
+  const loggerRef = useRef<StructuredVoiceLogger | null>(null);
 
   // Keep refs up to date
   useEffect(() => {
@@ -79,20 +81,9 @@ export function useVoiceRecognition({
     return utterancesRef.current;
   }, []);
 
-  // Function to clear utterances
-  const clearUtterances = useCallback(() => {
-    console.log('Clearing utterances');
-    setUtterances([]);
-    localStorage.removeItem('utteranceHistory');
-  }, []);
-
-  // Refs for voice recognition
-  const listenerRef = useRef<WakeWordListener | null>(null);
-  const loggerRef = useRef<StructuredVoiceLogger | null>(null);
-
   // Initialize WakeWordListener once and only once
   useEffect(() => {
-    if (!apiKey || listenerRef.current) return;
+    if (!apiKey) return;
 
     console.log('Creating WakeWordListener instance');
     const listener = new WakeWordListener({
@@ -101,10 +92,10 @@ export function useVoiceRecognition({
       onStateChange: (state) => {
         console.log('Voice state changed:', state);
         setVoiceStatus(state);
-        // If we're awake (actively listening for commands), ensure recognition stays active
-        if (state.isAwake && listenerRef.current) {
-          console.log('Ensuring continuous listening');
-          listenerRef.current.start();
+        if (state.isAwake === false && !state.awakeningId) {
+          // Reset error state when returning to initial state
+          setError('');
+          setMicPermissionDenied(false);
         }
       },
       onError: (error) => {
@@ -125,18 +116,27 @@ export function useVoiceRecognition({
       },
       onDebug: (event) => {
         console.log('Speech event:', event);
+      },
+      onListeningChange: (isActive) => {
+        console.log('Listening state changed:', isActive);
+        if (!isActive && isListening) {
+          // Only update if we think we're listening but we're actually not
+          setIsListening(false);
+        }
       }
     });
+
     listenerRef.current = listener;
 
+    // Clean up on unmount
     return () => {
       console.log('Cleaning up WakeWordListener');
       if (listenerRef.current) {
-        listenerRef.current.stop();
+        listenerRef.current.setListening(false).catch(console.error);
         listenerRef.current = null;
       }
     };
-  }, [apiKey]); // Only depend on apiKey for initial creation
+  }, [apiKey, wakeWord, sleepWord, isListening, setIsListening]);
 
   // Initialize/update StructuredVoiceLogger when config changes
   useEffect(() => {
@@ -169,7 +169,6 @@ export function useVoiceRecognition({
           endedAt: data.endedAt ? new Date(data.endedAt).toISOString() : undefined,
         } as NewbornEvent;
 
-        // If this is an update to an existing event
         if (data.id) {
           const existingEvent = events.find(e => e.id === data.id);
           if (existingEvent) {
@@ -184,7 +183,6 @@ export function useVoiceRecognition({
           }
         }
 
-        // If this is a new event
         console.log('=== Creating new event ===');
         console.log(JSON.stringify(enrichedData, null, 2));
         console.log('========================');
@@ -224,33 +222,26 @@ export function useVoiceRecognition({
     };
   }, [apiKey, wakeWord, sleepWord]); // Remove events and utterances from deps
 
-  // Update wake/sleep words when they change
-  useEffect(() => {
-    if (listenerRef.current) {
-      console.log('Updating wake/sleep words:', { wakeWord, sleepWord });
-      listenerRef.current.updateWakeWord(wakeWord);
-      listenerRef.current.updateSleepWord(sleepWord);
-    }
-  }, [wakeWord, sleepWord]);
-
-  // Persist utterances to localStorage
-  useEffect(() => {
-    localStorage.setItem('utteranceHistory', JSON.stringify(utterances));
-  }, [utterances]);
-
   // Handle listening state changes
   useEffect(() => {
     const listener = listenerRef.current;
     if (!listener) return;
 
-    if (isListening) {
-      console.log('Starting voice recognition');
-      listener.start();
-    } else {
-      console.log('Stopping voice recognition');
-      listener.stop();
-    }
+    console.log('Updating listening state:', isListening);
+    listener.setListening(isListening).catch(error => {
+      console.error('Error updating listening state:', error);
+      setError(error instanceof Error ? error.message : String(error));
+      if (error.message?.includes('Permission denied') || error.message?.includes('not allowed')) {
+        setMicPermissionDenied(true);
+        setIsListening(false);
+      }
+    });
   }, [isListening]);
+
+  // Persist utterances to localStorage
+  useEffect(() => {
+    localStorage.setItem('utteranceHistory', JSON.stringify(utterances));
+  }, [utterances]);
 
   return {
     isListening,
@@ -258,7 +249,11 @@ export function useVoiceRecognition({
     error,
     micPermissionDenied,
     utterances,
-    clearUtterances,
+    clearUtterances: useCallback(() => {
+      console.log('Clearing utterances');
+      setUtterances([]);
+      localStorage.removeItem('utteranceHistory');
+    }, []),
     debugSetWakeState: useCallback((isAwake: boolean) => {
       listenerRef.current?.debugSetWakeState(isAwake);
     }, []),

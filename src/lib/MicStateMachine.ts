@@ -1,13 +1,15 @@
 // Define the possible states for the microphone
-export type MicState = 'DISABLED' | 'SLEEPING' | 'AWAKE';
+export type MicState = 'DISABLED' | 'REQUESTING_PERMISSION' | 'SLEEPING' | 'AWAKE';
 
 // Define the possible events that can trigger state transitions
 export type MicEvent = 
-  | { type: 'ENABLE'; hasPermission?: boolean }
+  | { type: 'ENABLE' }
+  | { type: 'REQUEST_PERMISSION' }
+  | { type: 'PERMISSION_GRANTED' }
+  | { type: 'PERMISSION_DENIED' }
   | { type: 'DISABLE' }
   | { type: 'WAKE' }
-  | { type: 'SLEEP' }
-  | { type: 'PERMISSION_DENIED' };
+  | { type: 'SLEEP' };
 
 // Define the state machine context
 export interface MicContext {
@@ -51,36 +53,63 @@ export class MicStateMachine {
     const prevState = this.state;
     const prevContext = { ...this.context };
 
+    console.log(`[MicStateMachine] Processing event: ${event.type} in state: ${this.state}`, {
+      currentState: this.state,
+      currentContext: this.context,
+      event
+    });
+
     // Handle state transitions based on current state and event
     switch (this.state) {
       case 'DISABLED':
         if (event.type === 'ENABLE') {
-          if (event.hasPermission) {
+          console.log('[MicStateMachine] Transitioning from DISABLED to REQUESTING_PERMISSION');
+          this.state = 'REQUESTING_PERMISSION';
+          this.context.error = undefined;
+        }
+        break;
+
+      case 'REQUESTING_PERMISSION':
+        switch (event.type) {
+          case 'PERMISSION_GRANTED':
+            console.log('[MicStateMachine] Permission granted, transitioning to SLEEPING');
             this.state = 'SLEEPING';
             this.context.hasPermission = true;
             this.context.error = undefined;
-          } else {
-            this.context.error = 'Microphone permission required';
+            break;
+          case 'PERMISSION_DENIED':
+            console.log('[MicStateMachine] Permission denied, transitioning to DISABLED');
+            this.state = 'DISABLED';
             this.context.hasPermission = false;
-          }
+            this.context.error = 'Microphone permission denied';
+            break;
+          case 'DISABLE':
+            console.log('[MicStateMachine] Received DISABLE while requesting permission');
+            this.state = 'DISABLED';
+            break;
         }
         break;
 
       case 'SLEEPING':
         switch (event.type) {
           case 'DISABLE':
+            console.log('[MicStateMachine] Transitioning from SLEEPING to DISABLED');
             this.state = 'DISABLED';
             break;
           case 'WAKE':
             if (this.context.hasPermission) {
+              console.log('[MicStateMachine] Transitioning from SLEEPING to AWAKE');
               this.state = 'AWAKE';
               this.context.awakeningId++;
               this.context.error = undefined;
             } else {
+              console.log('[MicStateMachine] Cannot wake without permission, transitioning to DISABLED');
               this.context.error = 'Cannot wake without microphone permission';
+              this.state = 'DISABLED';
             }
             break;
           case 'PERMISSION_DENIED':
+            console.log('[MicStateMachine] Permission denied while SLEEPING, transitioning to DISABLED');
             this.state = 'DISABLED';
             this.context.hasPermission = false;
             this.context.error = 'Microphone permission denied';
@@ -91,26 +120,18 @@ export class MicStateMachine {
       case 'AWAKE':
         switch (event.type) {
           case 'DISABLE':
+            console.log('[MicStateMachine] Transitioning from AWAKE to DISABLED');
             this.state = 'DISABLED';
             break;
           case 'SLEEP':
+            console.log('[MicStateMachine] Transitioning from AWAKE to SLEEPING');
             this.state = 'SLEEPING';
             break;
           case 'PERMISSION_DENIED':
+            console.log('[MicStateMachine] Permission denied while AWAKE, transitioning to DISABLED');
             this.state = 'DISABLED';
             this.context.hasPermission = false;
             this.context.error = 'Microphone permission denied';
-            break;
-          case 'ENABLE':
-            // Update permission status but stay in current state
-            if (event.hasPermission) {
-              this.context.hasPermission = true;
-              this.context.error = undefined;
-            } else {
-              this.state = 'DISABLED';
-              this.context.hasPermission = false;
-              this.context.error = 'Microphone permission required';
-            }
             break;
         }
         break;
@@ -118,26 +139,39 @@ export class MicStateMachine {
 
     // Log state transitions for debugging
     if (this.state !== prevState) {
-      console.log(`State transition: ${prevState} -> ${this.state}`, {
+      console.log(`[MicStateMachine] State transition complete: ${prevState} -> ${this.state}`, {
         event,
+        prevContext,
+        newContext: this.context,
+        hasPermission: this.context.hasPermission,
+        error: this.context.error
+      });
+    } else {
+      console.log(`[MicStateMachine] No state change after event: ${event.type}`, {
+        state: this.state,
         context: this.context
       });
     }
 
     // Notify if state or context changed
     if (this.state !== prevState || JSON.stringify(this.context) !== JSON.stringify(prevContext)) {
+      console.log('[MicStateMachine] Notifying state change listeners', {
+        state: this.state,
+        context: this.context
+      });
       this.onStateChange?.(this.state, this.getContext());
     }
 
     // Notify if there's an error
     if (this.context.error && this.context.error !== prevContext.error) {
+      console.log('[MicStateMachine] Notifying error listeners:', this.context.error);
       this.onError?.(this.context.error);
     }
   }
 
   // Public methods to send events
-  enable(hasPermission: boolean = false): void {
-    this.transition({ type: 'ENABLE', hasPermission });
+  enable(): void {
+    this.transition({ type: 'ENABLE' });
   }
 
   disable(): void {
@@ -152,6 +186,10 @@ export class MicStateMachine {
     this.transition({ type: 'SLEEP' });
   }
 
+  permissionGranted(): void {
+    this.transition({ type: 'PERMISSION_GRANTED' });
+  }
+
   permissionDenied(): void {
     this.transition({ type: 'PERMISSION_DENIED' });
   }
@@ -159,6 +197,10 @@ export class MicStateMachine {
   // Helper methods to check state
   isDisabled(): boolean {
     return this.state === 'DISABLED';
+  }
+
+  isRequestingPermission(): boolean {
+    return this.state === 'REQUESTING_PERMISSION';
   }
 
   isSleeping(): boolean {
