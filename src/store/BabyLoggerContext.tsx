@@ -105,11 +105,11 @@ export function BabyLoggerProvider({ children }: { children: React.ReactNode }) 
   });
 
   const [wakeWord, setWakeWord] = useState(() => 
-    localStorage.getItem('wakeWord') || 'start listening'
+    localStorage.getItem('wakeWord') || 'microphone awake'
   );
 
   const [sleepWord, setSleepWord] = useState(() => 
-    localStorage.getItem('sleepWord') || 'stop listening'
+    localStorage.getItem('sleepWord') || 'microphone asleep'
   );
 
   const [apiKey, setApiKey] = useState(() => 

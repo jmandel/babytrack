@@ -14,6 +14,7 @@
             padding: 10px;
             background: #f0f0f0;
             border-radius: 4px;
+            line-height: 1.8;
         }
         #controls {
             margin: 20px 0;
@@ -62,6 +63,18 @@
             margin: 5px;
             padding: 4px;
         }
+        .state-indicator {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-weight: 500;
+            min-width: 80px;
+            text-align: center;
+        }
+        .state-disabled { background: #ff6b6b; color: white; }
+        .state-listening { background: #69db7c; color: white; }
+        .state-asleep { background: #adb5bd; color: white; }
+        .state-awake { background: #4dabf7; color: white; }
     </style>
 </head>
 <body>
@@ -79,8 +92,8 @@
     </div>
 
     <div id="status">
-        Current State: <span id="currentState">DISABLED</span><br>
-        Is Awake: <span id="isAwake">false</span><br>
+        Mic State: <span id="currentState" class="state-indicator state-disabled">DISABLED</span><br>
+        Wake State: <span id="wakeState" class="state-indicator state-asleep">ASLEEP</span><br>
         Platform: <span id="platform">detecting...</span>
     </div>
 
@@ -100,7 +113,7 @@
         const stopBtn = document.getElementById('stopBtn');
         const clearBtn = document.getElementById('clearBtn');
         const currentState = document.getElementById('currentState');
-        const isAwake = document.getElementById('isAwake');
+        const wakeState = document.getElementById('wakeState');
         const platform = document.getElementById('platform');
         const wakeWordInput = document.getElementById('wakeWord');
         const sleepWordInput = document.getElementById('sleepWord');
@@ -126,8 +139,9 @@
                 wakeWord: wakeWordInput.value,
                 sleepWord: sleepWordInput.value,
                 onStateChange: (state) => {
-                    addLogEntry(`State changed - isAwake: ${state.isAwake}, awakeningId: ${state.awakeningId}`, 'state');
-                    isAwake.textContent = state.isAwake.toString();
+                    addLogEntry(`Wake state changed to: ${state.isAwake ? 'AWAKE' : 'ASLEEP'}`, 'state');
+                    wakeState.textContent = state.isAwake ? 'AWAKE' : 'ASLEEP';
+                    wakeState.className = `state-indicator ${state.isAwake ? 'state-awake' : 'state-asleep'}`;
                 },
                 onError: (error) => {
                     addLogEntry(`Error: ${error.message}`, 'error');
@@ -139,10 +153,11 @@
                     addLogEntry(`Debug: ${JSON.stringify(event)}`, 'debug');
                 },
                 onListeningChange: (isListening) => {
-                    addLogEntry(`Listening state changed: ${isListening}`, 'state');
-                    // startBtn.disabled = isListening;
-                    // stopBtn.disabled = !isListening;
+                    addLogEntry(`Mic state changed to: ${isListening ? 'LISTENING' : 'DISABLED'}`, 'state');
                     currentState.textContent = isListening ? 'LISTENING' : 'DISABLED';
+                    currentState.className = `state-indicator ${isListening ? 'state-listening' : 'state-disabled'}`;
+                    startBtn.disabled = isListening;
+                    stopBtn.disabled = !isListening;
                 }
             });
         }
@@ -176,7 +191,7 @@
 
         // Initialize with default wake/sleep words
         initializeListener();
-        // stopBtn.disabled = true;
+        stopBtn.disabled = true;
     </script>
 </body>
 </html> 

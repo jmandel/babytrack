@@ -117,9 +117,9 @@ export function VoiceLoggerApp() {
                   <span className="text-gray-400">No access</span>
                 ) : isListening ? (
                   voiceStatus.isAwake ? (
-                    <span className="text-red-600">Recording...</span>
+                    <span className="text-red-600">Awake</span>
                   ) : (
-                    <span className="text-yellow-600">Sleeping</span>
+                    <span className="text-yellow-600">Asleep</span>
                   )
                 ) : (
                   <span className="text-gray-500">Mic off</span>
