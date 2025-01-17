@@ -172,13 +172,25 @@ export class StructuredVoiceLogger {
 
             const result = this.parseResponse(completion.choices[0].message?.content || '');
             
-            // If we got a valid JSON response, add this to utterance history
-            if (result && this.addUtterance) {
-                this.addUtterance(text, timestamp);
+            // Only process if we got a valid NewbornEvent
+            if (result) {
+                // If we got a valid JSON response, add this to utterance history
+                if (this.addUtterance) {
+                    this.addUtterance(text, timestamp);
+                }
+                
+                this.onStructuredData?.(result);
+                return result;
+            } else {
+                // For non-JSON responses (like "truncated"), notify via debug
+                const response = completion.choices[0].message?.content || '';
+                this.onDebug?.({
+                    type: 'non-json-response',
+                    message: response,
+                    timestamp: new Date()
+                });
+                return null;
             }
-            
-            this.onStructuredData?.(result);
-            return result;
 
         } catch (error) {
             if (error instanceof Error) {
@@ -244,12 +256,18 @@ export class StructuredVoiceLogger {
            - If the user's request appear to be truncated, respond with a plain text message stating "truncated"`;
     }
 
-    private parseResponse(response: string): NewbornEvent {
+    private parseResponse(response: string): NewbornEvent | null {
         try {
             const jsonMatch = response.match(/```json\n([\s\S]*?)\n```/) || 
                             response.match(/```([\s\S]*?)```/);
             
-            const jsonStr = jsonMatch ? jsonMatch[1] ?? response : response;
+            // If no code block is found, return null
+            if (!jsonMatch) {
+                return null;
+            }
+
+            // Extract JSON from code block and parse it
+            const jsonStr = jsonMatch[1] ?? response;
             return JSON5.parse(jsonStr);
 
         } catch (error) {

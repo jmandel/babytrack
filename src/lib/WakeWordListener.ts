@@ -258,7 +258,7 @@ export class WakeWordListener {
         if (!this.stateMachine.isAwake() && transcript.includes(this.wakeWord)) {
             this.stateMachine.wake();
             
-            // Process content after wake word
+            // Process content after wake word, excluding the wake word itself
             const parts = transcript.split(this.wakeWord);
             const afterWake = parts[parts.length - 1]?.trim();
             if (afterWake && !afterWake.includes(this.sleepWord)) {
@@ -269,7 +269,7 @@ export class WakeWordListener {
 
         // Sleep word detection
         if (this.stateMachine.isAwake() && transcript.includes(this.sleepWord)) {
-            // Process content before sleep word
+            // Process content before sleep word, excluding the sleep word itself
             const parts = transcript.split(this.sleepWord);
             const beforeSleep = parts[0]?.trim();
             if (beforeSleep && !beforeSleep.includes(this.wakeWord)) {
@@ -280,13 +280,11 @@ export class WakeWordListener {
             return;
         }
 
-        // Normal utterance when awake
-        if (this.stateMachine.isAwake()) {
+        // Normal utterance when awake - only send if not a wake/sleep command
+        if (this.stateMachine.isAwake() && 
+            !transcript.includes(this.wakeWord) && 
+            !transcript.includes(this.sleepWord)) {
             this.onUtterance?.({ text: transcript });
-        } else if (transcript === this.wakeWord) {
-            this.stateMachine.wake();
-        } else if (transcript === this.sleepWord) {
-            this.stateMachine.sleep();
         }
     }
 } 

@@ -204,7 +204,11 @@ export function useVoiceRecognition({
         setError(error.message);
       },
       onDebug: (event) => {
-        if (event.event === 'utterance-to-llm') {
+        if (event.type === 'non-json-response') {
+          setCurrentUtterance(event.message);
+          setToastOpen(true);
+        }
+        else if (event.event === 'utterance-to-llm') {
           setCurrentUtterance(event.utterance);
           setToastOpen(true);
         }
