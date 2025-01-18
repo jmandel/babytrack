@@ -243,9 +243,6 @@ export function useVoiceRecognition({
   useEffect(() => {
     const listener = listenerRef.current;
     if (!listener) return;
-
-    let timeoutId: number | null = null;
-    
     const updateListening = () => {
       console.log('Updating listening state:', isListening);
       listener.setListening(isListening).catch(error => {
@@ -257,21 +254,7 @@ export function useVoiceRecognition({
         }
       });
     };
-
-    // Clear any existing timeout
-    if (timeoutId !== null) {
-      window.clearTimeout(timeoutId);
-    }
-
-    // Set a new timeout
-    timeoutId = window.setTimeout(updateListening, 300);
-
-    // Cleanup
-    return () => {
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-      }
-    };
+    updateListening();
   }, [isListening]);
 
   // Persist utterances to localStorage
