@@ -106,10 +106,6 @@ export class WakeWordListener {
 
             this.recognition.onend = () => {
                 this.recognizing = false;
-                if (this.ignoreOnEnd) {
-                    this.ignoreOnEnd = false;
-                    return;
-                }
                 this.onListeningChange?.(false);
                 
                 // Only restart if we're supposed to be listening
@@ -120,7 +116,6 @@ export class WakeWordListener {
 
             this.recognition.onerror = (event) => {
                 if (event.error === 'not-allowed') {
-                    this.ignoreOnEnd = true;
                     this.recognizing = false;
                     this.onError(new Error('Microphone permission denied'));
                     this.stop();
@@ -128,7 +123,6 @@ export class WakeWordListener {
                 }
                 
                 if (event.error === 'no-speech') {
-                    this.ignoreOnEnd = true;
                     this.onDebug?.({ event: 'no-speech' });
                     return;
                 }
@@ -137,20 +131,6 @@ export class WakeWordListener {
             };
 
             this.recognition.onresult = this.handleResult.bind(this);
-
-            // Handle visibility changes
-            document.addEventListener('visibilitychange', () => {
-                if (document.visibilityState === 'hidden') {
-                    this.ignoreOnEnd = true;
-                    if (this.recognizing) {
-                        this.recognition.stop();
-                    }
-                } else if (document.visibilityState === 'visible' && this.desiredListeningState) {
-                    setTimeout(() => {
-                        this.startRecognition();
-                    }, 1000);
-                }
-            });
 
         } catch (error) {
             this.onError(error instanceof Error ? error : new Error('Failed to initialize speech recognition'));
@@ -170,7 +150,7 @@ export class WakeWordListener {
             stream.getTracks().forEach(track => track.stop());
 
             // Now that we have permission, start recognition
-            this.ignoreOnEnd = false;
+
             await this.recognition.start();
             this.onDebug?.({ event: 'recognition-started' });
             // Only now enable the state machine
@@ -185,7 +165,6 @@ export class WakeWordListener {
             } else {
                 this.onError(new Error('Failed to start recognition'));
             }
-            this.ignoreOnEnd = true;
             this.stop();
         }
     }
@@ -203,7 +182,6 @@ export class WakeWordListener {
     async stop() {
         this.desiredListeningState = false;
         if (this.recognizing) {
-            this.ignoreOnEnd = true;
             try {
                 await this.recognition.stop();
             } catch (error) {
