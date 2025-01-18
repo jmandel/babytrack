@@ -114,9 +114,7 @@ export class WakeWordListener {
                 
                 // Only restart if we're supposed to be listening
                 if (this.desiredListeningState && !this.stateMachine.isDisabled()) {
-                    setTimeout(() => {
                         this.startRecognition();
-                    }, 1000);
                 }
             };
 
