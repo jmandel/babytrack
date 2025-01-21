@@ -82,7 +82,7 @@ export class StructuredVoiceLogger {
 
         this.processTimeout = setTimeout(() => {
             this.tryProcessBuffer();
-        }, 150);
+        }, 500);
     }
 
     private async tryProcessBuffer() {

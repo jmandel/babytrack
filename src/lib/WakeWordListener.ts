@@ -224,10 +224,10 @@ export class WakeWordListener {
         const transcript = event.results[current][0].transcript.toLowerCase().trim();
         const isFinal = event.results[current].isFinal;
 
-        // Log all utterances (both partial and final)
-        console.log(`[Speech] ${isFinal ? 'Final' : 'Partial'}: "${transcript}"`);
+        // Log all utterances (both partial and final) for debugging
+        this.onDebug?.({ event: 'speech', isFinal, transcript });
 
-        // Only process commands on final results
+        // Only process commands and send utterances on final results
         if (!isFinal) return;
 
         // Wake word detection
@@ -237,8 +237,8 @@ export class WakeWordListener {
             // Process content after wake word, excluding the wake word itself
             const parts = transcript.split(this.wakeWord);
             const afterWake = parts[parts.length - 1]?.trim();
-            if (afterWake && !afterWake.includes(this.sleepWord)) {
-                this.onUtterance?.({ text: afterWake });
+            if (afterWake && !afterWake.includes(this.sleepWord) && this.onUtterance) {
+                this.onUtterance({ text: afterWake });
             }
             return;
         }
@@ -248,19 +248,16 @@ export class WakeWordListener {
             // Process content before sleep word, excluding the sleep word itself
             const parts = transcript.split(this.sleepWord);
             const beforeSleep = parts[0]?.trim();
-            if (beforeSleep && !beforeSleep.includes(this.wakeWord)) {
-                this.onUtterance?.({ text: beforeSleep });
+            if (beforeSleep && this.onUtterance) {
+                this.onUtterance({ text: beforeSleep });
             }
-            
             this.stateMachine.sleep();
             return;
         }
 
-        // Normal utterance when awake - only send if not a wake/sleep command
-        if (this.stateMachine.isAwake() && 
-            !transcript.includes(this.wakeWord) && 
-            !transcript.includes(this.sleepWord)) {
-            this.onUtterance?.({ text: transcript });
+        // Regular utterance while awake
+        if (this.stateMachine.isAwake() && this.onUtterance) {
+            this.onUtterance({ text: transcript });
         }
     }
 } 
